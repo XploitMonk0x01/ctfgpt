@@ -1,0 +1,47 @@
+# CTF-GPT Configuration
+# Override with env vars: LLM_MODE, GROQ_API_KEY, DEEPSEEK_API_KEY
+
+# LLM configuration
+llm_mode: cloud              # cloud | local (Ollama, future)
+
+cloud:
+  provider: groq             # groq | deepseek
+  model: llama-3.3-70b-versatile
+  # GROQ_API_KEY -> set as env var, never in this file
+
+# DeepSeek config (used when cloud.provider = deepseek)
+deepseek:
+  model: deepseek-chat       # deepseek-chat (V3, fast) | deepseek-reasoner (R1, deep thinking)
+  # DEEPSEEK_API_KEY -> set as env var, never in this file
+
+local:
+  model: mistral
+  embed_model: nomic-embed-text
+  base_url: http://localhost:11434
+
+# Embedding (always local via sentence-transformers)
+embedding:
+  model: all-MiniLM-L6-v2
+
+# MCP configuration - points to official mcp-kali-server
+mcp:
+  enabled: false             # opt-in, false by default
+  host: localhost            # localhost via SSH tunnel
+  port: 5000                 # kali-server-mcp default port
+  timeout: 30
+  scope: null                # null = no restriction
+
+# LangGraph agent settings
+agent:
+  max_iterations: 8
+  decay_threshold: 0.1
+  auto_report: true          # save .md report after every agent session
+
+# Storage paths (relative to ~/.ctfgpt/)
+db:
+  path: ~/.ctfgpt/db         # ChromaDB persistent storage
+
+# Hint settings
+hints:
+  default_level: 1
+  max_level: 3
