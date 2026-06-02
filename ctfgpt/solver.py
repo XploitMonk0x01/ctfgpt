@@ -486,15 +486,15 @@ def _hostnames_for_mapping(hostname: str, challenge_desc: str) -> list[str]:
 
 def _hosts_mapping_command(ip_address: str, hostnames: list[str]) -> str:
     """Return an idempotent shell command that maps hostnames to *ip_address*."""
-    escaped_hosts = [re.escape(hostname) for hostname in hostnames]
-    hosts = " ".join(hostnames)
-    entry = shlex.quote(f"{ip_address}\t{hosts}")
-    first_host_arg = shlex.quote(hostnames[0])
-    pattern = shlex.quote(rf"(^|[[:space:]])({'|'.join(escaped_hosts)})([[:space:]]|$)")
+    quoted_hosts = " ".join(shlex.quote(hostname) for hostname in hostnames)
+    ip_arg = shlex.quote(ip_address)
     return (
-        f"grep -Eq {pattern} /etc/hosts "
-        f"&& getent hosts {first_host_arg} "
-        f"|| echo {entry} | sudo tee -a /etc/hosts"
+        f"for host in {quoted_hosts}; do "
+        f"awk -v h=\"$host\" '{{for (i=2; i<=NF; i++) if ($i == h) found=1}} "
+        f"END {{exit !found}}' /etc/hosts "
+        f"|| printf '%s\\t%s\\n' {ip_arg} \"$host\" | sudo tee -a /etc/hosts; "
+        f"done; "
+        f"getent hosts {quoted_hosts}"
     )
 
 
