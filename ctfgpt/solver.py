@@ -16,10 +16,12 @@ osint    → whois → nslookup → curl_headers → wayback → summarise
 
 from __future__ import annotations
 
-import re
 import time
+import re
+from urllib.parse import urlparse
 from dataclasses import dataclass, field
 from datetime import datetime
+import shlex
 from typing import Callable, Optional
 
 from rich.console import Console
@@ -103,13 +105,13 @@ PLAYBOOKS: dict[str, list[ToolStep]] = {
 
     "web": [
         ToolStep("Port Scan",         "nmap -sCV -T4 --top-ports 1000 {target}",    "Discover open ports & services",       phase="recon", timeout=120),
-        ToolStep("HTTP Headers",      "curl -sI http://{target}",                   "Check server, tech stack, cookies",    phase="recon"),
-        ToolStep("Nikto Scan",        "nikto -h http://{target} -nossl -timeout 10","Find common vulns & misconfigs",       phase="recon", timeout=120),
-        ToolStep("Dir Bust",          "gobuster dir -u http://{target} -w /usr/share/wordlists/dirb/common.txt -q -t 20 --timeout 10s", "Discover hidden paths", phase="enum", timeout=120),
-        ToolStep("robots.txt",        "curl -s http://{target}/robots.txt",         "Check disallowed paths",               phase="enum",  required=False),
-        ToolStep("WPScan",            "wpscan --url http://{target} --enumerate vp,vt,u --no-banner", "WordPress vuln scan (plugins, themes, users)", phase="enum", timeout=180, required=False),
-        ToolStep("Cookies & Auth",    "curl -sv http://{target} 2>&1 | grep -iE 'set-cookie|authorization|location'", "Check auth flow", phase="enum", required=False),
-        ToolStep("Source Hints",      "curl -s http://{target} | grep -iE 'flag|ctf|secret|pass|token|admin|TODO|FIXME'", "Look for flags/hints in HTML", phase="exploit", required=False),
+        ToolStep("HTTP Headers",      "curl -sI {url}",                             "Check server, tech stack, cookies",    phase="recon"),
+        ToolStep("Nikto Scan",        "nikto -h {url} -nossl -timeout 10",          "Find common vulns & misconfigs",       phase="recon", timeout=120),
+        ToolStep("Dir Bust",          "wordlist=$(for f in /usr/share/wordlists/dirb/common.txt /usr/share/seclists/Discovery/Web-Content/common.txt /usr/share/wordlists/dirbuster/directory-list-2.3-small.txt; do [ -f \"$f\" ] && echo \"$f\" && break; done); if [ -z \"$wordlist\" ]; then echo 'ERROR: no common web wordlist found' >&2; exit 2; fi; gobuster dir -u {url} -w \"$wordlist\" -q -t 20 --timeout 10s", "Discover hidden paths", phase="enum", timeout=120),
+        ToolStep("robots.txt",        "curl -s {url}/robots.txt",                   "Check disallowed paths",               phase="enum",  required=False),
+        ToolStep("WPScan",            "wpscan --url {url} --enumerate vp,vt,u --no-banner", "WordPress vuln scan (plugins, themes, users)", phase="enum", timeout=180, required=False),
+        ToolStep("Cookies & Auth",    "curl -sv {url} 2>&1 | grep -iE 'set-cookie|authorization|location'", "Check auth flow", phase="enum", required=False),
+        ToolStep("Source Hints",      "curl -s {url} | grep -iE 'flag|ctf|secret|pass|token|admin|TODO|FIXME'", "Look for flags/hints in HTML", phase="exploit", required=False),
     ],
 
     "forensics": [
@@ -228,6 +230,8 @@ def run_solver(
 
     # --- Extract actionable target from input --------------------------------
     clean_target, challenge_desc = extract_target(target)
+    original_clean_target = clean_target
+    active_url = _target_to_url(clean_target)
 
     if not clean_target:
         console.print("[red]❌ Could not detect an IP, URL, or domain in your input.[/red]")
@@ -258,7 +262,7 @@ def run_solver(
         table.add_column("Step", style="bold")
         table.add_column("Command")
         for step in steps:
-            cmd = _render_command(step.command_template, clean_target, file_path)
+            cmd = _render_command(step.command_template, clean_target, file_path, active_url)
             table.add_row(step.phase, step.name, cmd)
         console.print(table)
         return f"[Dry run] {len(steps)} steps planned for category '{category}'", session_id
@@ -277,7 +281,7 @@ def run_solver(
 
     for step in steps:
         step_count += 1
-        cmd = _render_command(step.command_template, clean_target, file_path)
+        cmd = _render_command(step.command_template, clean_target, file_path, active_url)
 
         # Phase header
         if step.phase != last_phase:
@@ -311,6 +315,27 @@ def run_solver(
             weight = 0.8 if stdout.strip() else 0.3
             bb.write_finding(step.name, cmd, output, weight=weight)
 
+            if category == "web":
+                updated_url = _adapt_web_target_from_output(
+                    current_url=active_url,
+                    original_target=original_clean_target,
+                    output=output,
+                    blackboard=bb,
+                )
+                if updated_url != active_url:
+                    active_url = updated_url
+                    clean_target = _url_to_target(active_url)
+                    console.print(
+                        f"  [cyan]↪ Following discovered web target:[/cyan] "
+                        f"[bold]{active_url}[/bold]"
+                    )
+                    _offer_hosts_mapping(
+                        mcp=mcp,
+                        hostname=clean_target,
+                        ip_address=original_clean_target,
+                        blackboard=bb,
+                    )
+
         except Exception as exc:
             msg = str(exc)
             _render_step_output(step, f"Error: {msg}", False)
@@ -324,7 +349,7 @@ def run_solver(
     console.print(Rule("[bold green]Generating Solution Summary[/bold green]"))
     console.print("  [dim]Combining evidence with RAG writeup context…[/dim]\n")
 
-    evidence_text = bb.summary()
+    evidence_text = _summarize_evidence_for_rag(bb)
     query = (
         f"Solve this {category} CTF challenge.\n"
         f"Target: {clean_target}\n"
@@ -348,7 +373,12 @@ def run_solver(
     return hint, session_id
 
 
-def _render_command(template: str, target: str, file_path: Optional[str]) -> str:
+def _render_command(
+    template: str,
+    target: str,
+    file_path: Optional[str],
+    url: Optional[str] = None,
+) -> str:
     """Substitute ``{target}`` and ``{file}`` into a command template."""
     cmd = template
     if "{target}" in cmd:
@@ -356,6 +386,133 @@ def _render_command(template: str, target: str, file_path: Optional[str]) -> str
     if "{file}" in cmd:
         cmd = cmd.replace("{file}", file_path or "CHALLENGE_FILE")
     if "{url}" in cmd:
-        url = target if target.startswith("http") else f"http://{target}"
-        cmd = cmd.replace("{url}", url)
+        cmd = cmd.replace("{url}", url or _target_to_url(target))
     return cmd
+
+
+def _target_to_url(target: str) -> str:
+    """Return a web URL for an IP, hostname, or already-qualified URL."""
+    if target.startswith(("http://", "https://")):
+        return target.rstrip("/")
+    return f"http://{target.rstrip('/')}"
+
+
+def _url_to_target(url: str) -> str:
+    """Return the host component from a URL, falling back to the input."""
+    parsed = urlparse(url)
+    return parsed.netloc or url
+
+
+def _adapt_web_target_from_output(
+    current_url: str,
+    original_target: str,
+    output: str,
+    blackboard: object,
+) -> str:
+    """Follow obvious redirects discovered during web reconnaissance."""
+    match = re.search(r"(?i)(?:location:\s*|redirect(?:s|ed)?\s+to\s+)(https?://[^\s'\"<>]+)", output)
+    if not match:
+        return current_url
+
+    redirected_url = match.group(1).rstrip(".,;")
+    old_host = urlparse(current_url).netloc
+    new_host = urlparse(redirected_url).netloc
+    if not new_host or new_host == old_host:
+        return current_url
+
+    if _looks_like_ipv4(original_target) and not _looks_like_ipv4(new_host):
+        try:
+            blackboard.add_unexplored(
+                f"Redirect target {new_host} may need /etc/hosts mapping to {original_target}."
+            )
+        except AttributeError:
+            pass
+        console.print(f"  [yellow]Redirect uses virtual host {new_host}.[/yellow]")
+
+    return redirected_url.rstrip("/")
+
+
+def _offer_hosts_mapping(
+    mcp: object,
+    hostname: str,
+    ip_address: str,
+    blackboard: object,
+) -> None:
+    """Ask whether to add a discovered virtual host to Kali's /etc/hosts."""
+    if not _looks_like_ipv4(ip_address) or _looks_like_ipv4(hostname):
+        return
+
+    hosts_cmd = _hosts_mapping_command(ip_address, hostname)
+    console.print(
+        f"  [dim]Add Kali /etc/hosts mapping?[/dim] "
+        f"[bold]{ip_address} {hostname}[/bold] [dim][Y/n][/dim]",
+        end=" ",
+    )
+    choice = input().strip().lower()
+    if choice in {"n", "no"}:
+        console.print("  [yellow]Skipped /etc/hosts update; DNS-dependent tools may fail.[/yellow]")
+        return
+
+    try:
+        result = mcp.execute(hosts_cmd, timeout=15)
+        output = result.get("stdout", "") or result.get("stderr", "") or "(no output)"
+        success = result.get("success", True)
+        weight = 0.7 if success else 0.2
+        blackboard.write_finding("Hosts Mapping", hosts_cmd, output, weight=weight)
+        if success:
+            console.print(f"  [green]Added/verified /etc/hosts mapping for {hostname}.[/green]")
+        else:
+            console.print(f"  [red]Failed to add /etc/hosts mapping:[/red] {output[:200]}")
+    except Exception as exc:
+        blackboard.write_finding("Hosts Mapping", hosts_cmd, f"ERROR: {exc}", weight=0.1)
+        console.print(f"  [red]Failed to add /etc/hosts mapping:[/red] {exc}")
+
+
+def _hosts_mapping_command(ip_address: str, hostname: str) -> str:
+    """Return an idempotent shell command that maps *hostname* to *ip_address*."""
+    escaped_host = re.escape(hostname)
+    entry = shlex.quote(f"{ip_address}\t{hostname}")
+    host_arg = shlex.quote(hostname)
+    pattern = shlex.quote(rf"(^|[[:space:]]){escaped_host}([[:space:]]|$)")
+    return (
+        f"grep -Eq {pattern} /etc/hosts "
+        f"&& getent hosts {host_arg} "
+        f"|| echo {entry} | sudo tee -a /etc/hosts"
+    )
+
+
+def _looks_like_ipv4(value: str) -> bool:
+    """Return True when *value* is an IPv4 address-like string."""
+    return re.fullmatch(r"\d{1,3}(?:\.\d{1,3}){3}", value) is not None
+
+
+def _summarize_evidence_for_rag(blackboard: object, max_chars: int = 6000) -> str:
+    """Build a bounded, signal-focused evidence digest for the final RAG call."""
+    base_summary = blackboard.summary()
+    findings = getattr(blackboard, "findings", [])
+    interesting = re.compile(
+        r"flag|ctf|secret|token|password|admin|login|location:|set-cookie|"
+        r"wordpress|wp-|vulnerab|cve|open|service|http|robots|disallow|"
+        r"error|forbidden|unauthorized|redirect",
+        re.IGNORECASE,
+    )
+
+    blocks: list[str] = [base_summary, "", "Relevant Evidence Snippets:"]
+    for finding in sorted(findings, key=lambda item: item.get("weight", 0), reverse=True):
+        result = str(finding.get("result", ""))
+        lines = [line.strip() for line in result.splitlines() if interesting.search(line)]
+        if not lines:
+            lines = [line.strip() for line in result.splitlines()[:5] if line.strip()]
+
+        snippet = "\n".join(lines[:12])[:900]
+        if snippet:
+            blocks.append(
+                f"\n## {finding.get('tool', 'tool')}\n"
+                f"$ {finding.get('command', '')}\n"
+                f"{snippet}"
+            )
+
+    digest = "\n".join(blocks)
+    if len(digest) <= max_chars:
+        return digest
+    return digest[:max_chars] + "\n\n[Evidence truncated to fit the final summary prompt.]"
