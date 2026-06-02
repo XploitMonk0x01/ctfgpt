@@ -184,8 +184,8 @@ def ask(
 # ---------------------------------------------------------------------------
 @app.command()
 def solve(
-    target: str = typer.Argument(
-        ...,
+    target: Optional[str] = typer.Argument(
+        None,
         help="IP address, URL, hostname, or cipher text to solve",
     ),
     category: Optional[str] = typer.Option(
@@ -228,6 +228,12 @@ def solve(
     from ctfgpt.utils.history import save_session
 
     print_banner()
+
+    if not target:
+        target = typer.prompt("Enter target (IP, URL, domain, or challenge description)")
+        if not target:
+            console.print("[red]❌ Target is required to run solve mode.[/red]")
+            raise typer.Exit(1)
 
     # Confirmation panel
     if not dry_run:
