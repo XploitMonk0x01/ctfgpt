@@ -105,13 +105,13 @@ PLAYBOOKS: dict[str, list[ToolStep]] = {
 
     "web": [
         ToolStep("Port Scan",         "nmap -sCV -T4 --top-ports 1000 {target}",    "Discover open ports & services",       phase="recon", timeout=120),
-        ToolStep("HTTP Headers",      "curl -sSI {url}",                            "Check server, tech stack, cookies",    phase="recon"),
-        ToolStep("Nikto Scan",        "nikto -h {url} -nossl -timeout 10",          "Find common vulns & misconfigs",       phase="recon", timeout=120),
-        ToolStep("Dir Bust",          "wordlist=$(for f in /usr/share/wordlists/dirb/common.txt /usr/share/seclists/Discovery/Web-Content/common.txt /usr/share/wordlists/dirbuster/directory-list-2.3-small.txt; do [ -f \"$f\" ] && echo \"$f\" && break; done); if [ -z \"$wordlist\" ]; then echo 'ERROR: no common web wordlist found' >&2; exit 2; fi; gobuster dir -u {url} -w \"$wordlist\" -q -t 20 --timeout 10s", "Discover hidden paths", phase="enum", timeout=120),
-        ToolStep("robots.txt",        "curl -s {url}/robots.txt",                   "Check disallowed paths",               phase="enum",  required=False),
-        ToolStep("WPScan",            "wpscan --url {url} --enumerate vp,vt,u --no-banner", "WordPress vuln scan (plugins, themes, users)", phase="enum", timeout=180, required=False),
-        ToolStep("Cookies & Auth",    "curl -sv {url} 2>&1 | grep -iE 'set-cookie|authorization|location'", "Check auth flow", phase="enum", required=False),
-        ToolStep("Source Hints",      "curl -s {url} | grep -iE 'flag|ctf|secret|pass|token|admin|TODO|FIXME'", "Look for flags/hints in HTML", phase="exploit", required=False),
+        ToolStep("HTTP Headers",      "curl -sSI {host_header} {connect_url}",      "Check server, tech stack, cookies",    phase="recon"),
+        ToolStep("Nikto Scan",        "nikto -h {connect_url} {nikto_vhost} -nossl -timeout 10", "Find common vulns & misconfigs", phase="recon", timeout=120),
+        ToolStep("Dir Bust",          "wordlist=$(for f in /usr/share/wordlists/dirb/common.txt /usr/share/seclists/Discovery/Web-Content/common.txt /usr/share/wordlists/dirbuster/directory-list-2.3-small.txt; do [ -f \"$f\" ] && echo \"$f\" && break; done); if [ -z \"$wordlist\" ]; then echo 'ERROR: no common web wordlist found' >&2; exit 2; fi; gobuster dir -u {connect_url} {host_header} -w \"$wordlist\" -q -t 20 --timeout 10s", "Discover hidden paths", phase="enum", timeout=120),
+        ToolStep("robots.txt",        "curl -sS {host_header} {connect_url}/robots.txt", "Check disallowed paths",          phase="enum",  required=False),
+        ToolStep("WPScan",            "wpscan --url {connect_url} {wpscan_headers} --enumerate vp,vt,u --no-banner", "WordPress vuln scan (plugins, themes, users)", phase="enum", timeout=180, required=False),
+        ToolStep("Cookies & Auth",    "curl -sv {host_header} {connect_url} 2>&1 | grep -iE 'set-cookie|authorization|location'", "Check auth flow", phase="enum", required=False),
+        ToolStep("Source Hints",      "curl -sS {host_header} {connect_url} | grep -iE 'flag|ctf|secret|pass|token|admin|TODO|FIXME'", "Look for flags/hints in HTML", phase="exploit", required=False),
     ],
 
     "forensics": [
@@ -232,6 +232,7 @@ def run_solver(
     clean_target, challenge_desc = extract_target(target)
     original_clean_target = clean_target
     active_url = _target_to_url(clean_target)
+    virtual_host: Optional[str] = None
 
     if not clean_target:
         console.print("[red]❌ Could not detect an IP, URL, or domain in your input.[/red]")
@@ -262,7 +263,14 @@ def run_solver(
         table.add_column("Step", style="bold")
         table.add_column("Command")
         for step in steps:
-            cmd = _render_command(step.command_template, clean_target, file_path, active_url)
+            cmd = _render_command(
+                step.command_template,
+                clean_target,
+                file_path,
+                active_url,
+                connect_target=original_clean_target,
+                virtual_host=virtual_host,
+            )
             table.add_row(step.phase, step.name, cmd)
         console.print(table)
         return f"[Dry run] {len(steps)} steps planned for category '{category}'", session_id
@@ -281,7 +289,14 @@ def run_solver(
 
     for step in steps:
         step_count += 1
-        cmd = _render_command(step.command_template, clean_target, file_path, active_url)
+        cmd = _render_command(
+            step.command_template,
+            clean_target,
+            file_path,
+            active_url,
+            connect_target=original_clean_target,
+            virtual_host=virtual_host,
+        )
 
         # Phase header
         if step.phase != last_phase:
@@ -325,10 +340,17 @@ def run_solver(
                 if updated_url != active_url:
                     active_url = updated_url
                     clean_target = _url_to_target(active_url)
+                    if _looks_like_ipv4(original_clean_target) and not _looks_like_ipv4(clean_target):
+                        virtual_host = clean_target
                     console.print(
                         f"  [cyan]↪ Following discovered web target:[/cyan] "
                         f"[bold]{active_url}[/bold]"
                     )
+                    if virtual_host:
+                        console.print(
+                            f"  [cyan]↪ Using direct IP connection with Host header:[/cyan] "
+                            f"[bold]{original_clean_target}[/bold] → [bold]{virtual_host}[/bold]"
+                        )
                     _offer_hosts_mapping(
                         mcp=mcp,
                         hostname=clean_target,
@@ -379,16 +401,45 @@ def _render_command(
     target: str,
     file_path: Optional[str],
     url: Optional[str] = None,
+    connect_target: Optional[str] = None,
+    virtual_host: Optional[str] = None,
 ) -> str:
     """Substitute ``{target}`` and ``{file}`` into a command template."""
     cmd = template
+    rendered_url = url or _target_to_url(target)
+    connect_url = _connect_url(rendered_url, connect_target, virtual_host)
+    host_header = f"-H {shlex.quote(f'Host: {virtual_host}')}" if virtual_host else ""
+    nikto_vhost = f"-vhost {shlex.quote(virtual_host)}" if virtual_host else ""
+    wpscan_headers = f"--headers {shlex.quote(f'Host: {virtual_host}')}" if virtual_host else ""
+
     if "{target}" in cmd:
         cmd = cmd.replace("{target}", target)
     if "{file}" in cmd:
         cmd = cmd.replace("{file}", file_path or "CHALLENGE_FILE")
     if "{url}" in cmd:
-        cmd = cmd.replace("{url}", url or _target_to_url(target))
-    return cmd
+        cmd = cmd.replace("{url}", rendered_url)
+    replacements = {
+        "{connect_url}": connect_url,
+        "{host_header}": host_header,
+        "{nikto_vhost}": nikto_vhost,
+        "{wpscan_headers}": wpscan_headers,
+    }
+    for placeholder, value in replacements.items():
+        cmd = cmd.replace(placeholder, value)
+    return re.sub(r" {2,}", " ", cmd).strip()
+
+
+def _connect_url(url: str, connect_target: Optional[str], virtual_host: Optional[str]) -> str:
+    """Return the URL tools should connect to, preserving vhost in Host header."""
+    if not connect_target or not virtual_host or not _looks_like_ipv4(connect_target):
+        return url
+
+    parsed = urlparse(url)
+    if not parsed.scheme:
+        return _target_to_url(connect_target)
+
+    port = f":{parsed.port}" if parsed.port else ""
+    return f"{parsed.scheme}://{connect_target}{port}"
 
 
 def _target_to_url(target: str) -> str:
