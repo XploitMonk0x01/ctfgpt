@@ -138,7 +138,9 @@ Once connected, ask the agent to investigate:
 ctfgpt ask "The target is 10.10.11.230. Start recon." --agent
 ```
 
-The agent will execute tools (like `nmap`), read the output, update its evidence blackboard, and eventually provide you with a grounded hint. 
+The agent will autonomously plan its approach, but **will prompt you for approval before executing each command** on Kali. 
+
+Once you approve, it executes the tool (like `nmap`), reads the output, updates its evidence blackboard, and repeats the cycle until it has enough evidence to provide you with a grounded hint. 
 
 After the session, view the generated report:
 ```bash

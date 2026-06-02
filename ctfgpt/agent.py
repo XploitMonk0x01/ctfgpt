@@ -192,8 +192,11 @@ def plan_node(state: AgentState) -> dict:
         return {"next_action": "respond", "command": "", "error": str(exc)}
 
     # Parse the LLM decision
-    if response.upper().startswith("TOOL:"):
-        command = response[5:].strip()
+    import re
+    match = re.search(r"TOOL:\s*(.*)", response, re.IGNORECASE)
+    
+    if match:
+        command = match.group(1).strip()
         # Prevent repeating the same command
         if command in executed_cmds:
             console.print(f"  [yellow]⚠  Agent tried to repeat: {command} — forcing response.[/yellow]")
@@ -202,7 +205,19 @@ def plan_node(state: AgentState) -> dict:
                 "command": "",
                 "rag_context": rag_context,
             }
+            
         console.print(f"  [dim]Planned command:[/dim] [bold]{command}[/bold]")
+        
+        # Ask user before each execution
+        import typer
+        if not typer.confirm("  Continue and execute this command?", default=True):
+            console.print("  [dim]Execution aborted by user. Forcing response with current evidence.[/dim]")
+            return {
+                "next_action": "respond",
+                "command": "",
+                "rag_context": rag_context,
+            }
+            
         return {
             "next_action": "run_tool",
             "command": command,
