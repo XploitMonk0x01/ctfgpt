@@ -10,8 +10,7 @@ from typing import Optional
 
 from langchain_chroma import Chroma
 from langchain_core.documents import Document
-from langchain_core.prompts import ChatPromptTemplate
-from langchain_core.runnables import RunnablePassthrough
+from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_core.output_parsers import StrOutputParser
 from rich.console import Console
 
@@ -268,12 +267,18 @@ def ask(
     )
 
     try:
-        prompt = ChatPromptTemplate.from_messages([
-            ("system", prompt_text),
-            ("human", "{input}"),
-        ])
-        chain = prompt | llm | StrOutputParser()
-        response: str = chain.invoke({"input": query})
+        # Use direct messages instead of ChatPromptTemplate to avoid
+        # LangChain re-parsing { } characters in RAG content (code, JSON etc)
+        messages = [
+            SystemMessage(content=prompt_text),
+            HumanMessage(content=query),
+        ]
+        response_msg = llm.invoke(messages)
+        # LangChain models return AIMessage; Groq returns str directly
+        if hasattr(response_msg, "content"):
+            response = str(response_msg.content)
+        else:
+            response = str(response_msg)
     except Exception as exc:  # noqa: BLE001
         console.print(f"[bold red]❌ LLM call failed: {exc}[/bold red]")
         response = (
