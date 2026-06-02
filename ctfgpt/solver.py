@@ -289,8 +289,12 @@ def run_solver(
 
         # User approval
         import typer
-        approved = typer.confirm("     Run?", default=True)
-        if not approved:
+        console.print("     [dim]Run? [Y/n/q (quit to summary)][/dim]", end=" ")
+        choice = input().strip().lower()
+        if choice in ['q', 'quit']:
+            console.print("  [yellow]Playbook aborted early. Jumping to summary...[/yellow]")
+            break
+        elif choice in ['n', 'no']:
             console.print("  [yellow]Skipped.[/yellow]")
             continue
 
