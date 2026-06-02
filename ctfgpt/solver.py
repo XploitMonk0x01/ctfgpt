@@ -105,7 +105,7 @@ PLAYBOOKS: dict[str, list[ToolStep]] = {
 
     "web": [
         ToolStep("Port Scan",         "nmap -sCV -T4 --top-ports 1000 {target}",    "Discover open ports & services",       phase="recon", timeout=120),
-        ToolStep("HTTP Headers",      "curl -sI {url}",                             "Check server, tech stack, cookies",    phase="recon"),
+        ToolStep("HTTP Headers",      "curl -sSI {url}",                            "Check server, tech stack, cookies",    phase="recon"),
         ToolStep("Nikto Scan",        "nikto -h {url} -nossl -timeout 10",          "Find common vulns & misconfigs",       phase="recon", timeout=120),
         ToolStep("Dir Bust",          "wordlist=$(for f in /usr/share/wordlists/dirb/common.txt /usr/share/seclists/Discovery/Web-Content/common.txt /usr/share/wordlists/dirbuster/directory-list-2.3-small.txt; do [ -f \"$f\" ] && echo \"$f\" && break; done); if [ -z \"$wordlist\" ]; then echo 'ERROR: no common web wordlist found' >&2; exit 2; fi; gobuster dir -u {url} -w \"$wordlist\" -q -t 20 --timeout 10s", "Discover hidden paths", phase="enum", timeout=120),
         ToolStep("robots.txt",        "curl -s {url}/robots.txt",                   "Check disallowed paths",               phase="enum",  required=False),
@@ -333,6 +333,7 @@ def run_solver(
                         mcp=mcp,
                         hostname=clean_target,
                         ip_address=original_clean_target,
+                        challenge_desc=challenge_desc,
                         blackboard=bb,
                     )
 
@@ -436,16 +437,19 @@ def _offer_hosts_mapping(
     mcp: object,
     hostname: str,
     ip_address: str,
+    challenge_desc: str,
     blackboard: object,
 ) -> None:
     """Ask whether to add a discovered virtual host to Kali's /etc/hosts."""
     if not _looks_like_ipv4(ip_address) or _looks_like_ipv4(hostname):
         return
 
-    hosts_cmd = _hosts_mapping_command(ip_address, hostname)
+    hostnames = _hostnames_for_mapping(hostname, challenge_desc)
+    host_display = " ".join(hostnames)
+    hosts_cmd = _hosts_mapping_command(ip_address, hostnames)
     console.print(
         f"  [dim]Add Kali /etc/hosts mapping?[/dim] "
-        f"[bold]{ip_address} {hostname}[/bold] [dim][Y/n][/dim]",
+        f"[bold]{ip_address} {host_display}[/bold] [dim][Y/n][/dim]",
         end=" ",
     )
     choice = input().strip().lower()
@@ -460,7 +464,7 @@ def _offer_hosts_mapping(
         weight = 0.7 if success else 0.2
         blackboard.write_finding("Hosts Mapping", hosts_cmd, output, weight=weight)
         if success:
-            console.print(f"  [green]Added/verified /etc/hosts mapping for {hostname}.[/green]")
+            console.print(f"  [green]Added/verified /etc/hosts mapping for {host_display}.[/green]")
         else:
             console.print(f"  [red]Failed to add /etc/hosts mapping:[/red] {output[:200]}")
     except Exception as exc:
@@ -468,15 +472,28 @@ def _offer_hosts_mapping(
         console.print(f"  [red]Failed to add /etc/hosts mapping:[/red] {exc}")
 
 
-def _hosts_mapping_command(ip_address: str, hostname: str) -> str:
-    """Return an idempotent shell command that maps *hostname* to *ip_address*."""
-    escaped_host = re.escape(hostname)
-    entry = shlex.quote(f"{ip_address}\t{hostname}")
-    host_arg = shlex.quote(hostname)
-    pattern = shlex.quote(rf"(^|[[:space:]]){escaped_host}([[:space:]]|$)")
+def _hostnames_for_mapping(hostname: str, challenge_desc: str) -> list[str]:
+    """Return hostnames that should resolve to the same CTF target IP."""
+    hostnames = [hostname]
+    if hostname.startswith("www."):
+        apex = hostname.removeprefix("www.")
+        if apex and apex in challenge_desc:
+            hostnames.append(apex)
+    elif f"www.{hostname}" in challenge_desc:
+        hostnames.append(f"www.{hostname}")
+    return list(dict.fromkeys(hostnames))
+
+
+def _hosts_mapping_command(ip_address: str, hostnames: list[str]) -> str:
+    """Return an idempotent shell command that maps hostnames to *ip_address*."""
+    escaped_hosts = [re.escape(hostname) for hostname in hostnames]
+    hosts = " ".join(hostnames)
+    entry = shlex.quote(f"{ip_address}\t{hosts}")
+    first_host_arg = shlex.quote(hostnames[0])
+    pattern = shlex.quote(rf"(^|[[:space:]])({'|'.join(escaped_hosts)})([[:space:]]|$)")
     return (
         f"grep -Eq {pattern} /etc/hosts "
-        f"&& getent hosts {host_arg} "
+        f"&& getent hosts {first_host_arg} "
         f"|| echo {entry} | sudo tee -a /etc/hosts"
     )
 
