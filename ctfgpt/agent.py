@@ -54,6 +54,9 @@ Current Evidence: {blackboard_summary}
 RAG Context: {rag_context}
 Iteration: {iteration}/{max_iterations}
 
+IMPORTANT: Do NOT repeat a command that already failed or produced no results.
+If a command failed, try a DIFFERENT approach.
+
 Respond with EXACTLY one of:
 TOOL: <command> — to run a tool on Kali
 RESPOND — if you have enough evidence to give a hint
@@ -251,7 +254,16 @@ def execute_node(state: AgentState) -> dict:
         from ctfgpt.mcp_client import get_mcp_client
 
         client = get_mcp_client()
-        result = client.run_command(command)
+        result_dict = client.execute(command)
+
+        # extract output from the response dict
+        output = result_dict.get("output", "")
+        err = result_dict.get("error", "")
+        if err and not output:
+            console.print(f"  [red]⚠  Remote error: {err}[/red]")
+            return {"tool_output": "", "error": f"Remote: {err}"}
+
+        result = output if output else err
 
         # Extract tool name for display
         tool_name = command.split()[0] if command.split() else "unknown"
