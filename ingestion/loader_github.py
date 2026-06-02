@@ -20,11 +20,19 @@ from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn
 
 console = Console()
 
-# Well-known CTF writeup repos
+# Well-known CTF writeup repos (owner/repo format)
 DEFAULT_REPOS: list[str] = [
     "ctf-wiki/ctf-wiki",
     "w181496/Web-CTF-Cheatsheet",
     "apsdehal/awesome-ctf",
+]
+
+# User-specified repos to always include when running ingest --source github
+CTFGPT_REPOS: list[str] = [
+    "https://github.com/edoardottt/tryhackme-ctf",
+    "https://github.com/Esther7171/TryHackMe-Walkthroughs/tree/main/Room",
+    "https://github.com/momenbasel/htb-writeups",
+    "https://github.com/hackthebox/business-ctf-2025",
 ]
 
 GITHUB_RAW_BASE: str = "https://raw.githubusercontent.com"
@@ -81,6 +89,50 @@ def _detect_category(text: str) -> str:
             best_cat = category
 
     return best_cat
+
+
+# ── GitHub URL Parser ────────────────────────────────────────────────────────
+
+
+def parse_github_input(raw: str) -> tuple[str, Optional[str]]:
+    """Parse a GitHub repo URL or ``owner/name`` string into (repo, subdir).
+
+    Handles inputs like:
+    - ``"owner/repo"`` → ``("owner/repo", None)``
+    - ``"https://github.com/owner/repo"`` → ``("owner/repo", None)``
+    - ``"https://github.com/owner/repo/tree/main/path/to/dir"``
+      → ``("owner/repo", "path/to/dir")``
+
+    Parameters
+    ----------
+    raw:
+        A raw string from the user.
+
+    Returns
+    -------
+    tuple[str, Optional[str]]
+        ``("owner/repo", subdir_or_None)``
+    """
+    raw = raw.strip().rstrip("/")
+
+    # Full GitHub URL
+    match = re.match(
+        r"https?://github\.com/([^/]+/[^/]+)(?:/tree/[^/]+/?(.*))?",
+        raw,
+    )
+    if match:
+        repo = match.group(1)
+        subdir = match.group(2) or None
+        if subdir:
+            subdir = subdir.strip("/") or None
+        return repo, subdir
+
+    # Already owner/repo
+    if re.match(r"^[\w.-]+/[\w.-]+$", raw):
+        return raw, None
+
+    # Unrecognised — return as-is and let git handle the error
+    return raw, None
 
 
 # ── Network Helpers ────────────────────────────────────────────────────────
@@ -152,8 +204,11 @@ def clone_repo(repo: str, target_dir: Path) -> bool:
 # ── Repo Scanning ──────────────────────────────────────────────────────────
 
 
-def scan_repo_for_writeups(repo_dir: Path) -> list[dict]:
-    """Walk a cloned repository and extract writeup-formatted dicts.
+def scan_repo_for_writeups(
+    repo_dir: Path,
+    subdir: Optional[str] = None,
+) -> list[dict]:
+    """Walk a cloned repository (or a subdirectory of it) and extract writeup dicts.
 
     Finds all ``.md`` and ``.txt`` files, skips those shorter than 200
     characters (unlikely to be full writeups), and builds a writeup dict
@@ -163,6 +218,9 @@ def scan_repo_for_writeups(repo_dir: Path) -> list[dict]:
     ----------
     repo_dir:
         Root directory of the cloned repository.
+    subdir:
+        Optional subdirectory path relative to *repo_dir* to restrict
+        scanning to (e.g. ``"Room"`` from a ``/tree/main/Room`` URL).
 
     Returns
     -------
@@ -171,10 +229,19 @@ def scan_repo_for_writeups(repo_dir: Path) -> list[dict]:
     """
     from ingestion.chunker import detect_tools  # noqa: WPS433
 
+    scan_root = repo_dir
+    if subdir:
+        candidate = repo_dir / subdir
+        if candidate.is_dir():
+            scan_root = candidate
+            console.print(f"[dim]  Scanning subdirectory: {subdir}[/]")
+        else:
+            console.print(f"[yellow]⚠  Subdir '{subdir}' not found in repo — scanning full repo.[/]")
+
     writeups: list[dict] = []
 
     for ext in ("*.md", "*.txt"):
-        for file_path in repo_dir.rglob(ext):
+        for file_path in scan_root.rglob(ext):
             # Skip hidden dirs / common non-writeup files
             parts_lower = [p.lower() for p in file_path.parts]
             if any(p.startswith(".") for p in file_path.parts):
@@ -250,6 +317,11 @@ def load_from_repos(
 
     all_writeups: list[dict] = []
 
+    # Parse each repo entry: may be owner/repo or a full GitHub URL
+    parsed_repos: list[tuple[str, Optional[str]]] = [
+        parse_github_input(r) for r in repos
+    ]
+
     with Progress(
         SpinnerColumn(),
         TextColumn("[progress.description]{task.description}"),
@@ -257,9 +329,9 @@ def load_from_repos(
         TextColumn("[progress.percentage]{task.percentage:>3.0f}%"),
         console=console,
     ) as progress:
-        task = progress.add_task("Loading GitHub repos…", total=len(repos))
+        task = progress.add_task("Loading GitHub repos…", total=len(parsed_repos))
 
-        for repo in repos:
+        for repo, subdir in parsed_repos:
             if len(all_writeups) >= limit:
                 break
 
@@ -269,7 +341,7 @@ def load_from_repos(
                     progress.update(task, advance=1)
                     continue
 
-                repo_writeups = scan_repo_for_writeups(clone_dir)
+                repo_writeups = scan_repo_for_writeups(clone_dir, subdir=subdir)
 
                 # Respect the global limit
                 remaining = limit - len(all_writeups)
@@ -277,7 +349,6 @@ def load_from_repos(
 
                 # Update the GitHub URLs now that we know the real repo name
                 for wu in repo_writeups:
-                    # Fix URL: replace cloned dir name with actual repo path
                     rel_part = wu["url"].split("/blob/main/", 1)
                     if len(rel_part) == 2:
                         wu["url"] = f"https://github.com/{repo}/blob/main/{rel_part[1]}"
@@ -297,7 +368,8 @@ def load_from_repos(
 
                 all_writeups.extend(repo_writeups)
                 console.print(
-                    f"[dim]  ↳ {repo}: {len(repo_writeups)} writeups extracted[/]"
+                    f"[dim]  ↳ {repo}{f'/{subdir}' if subdir else ''}: "
+                    f"{len(repo_writeups)} writeups extracted[/]"
                 )
 
             progress.update(task, advance=1)
@@ -405,18 +477,27 @@ def run_github_loader(
     repos: Optional[list[str]] = None,
     urls: Optional[list[str]] = None,
     limit: int = 500,
+    include_default: bool = True,
 ) -> list[dict]:
     """Synchronous entry point combining repo cloning and URL fetching.
+
+    Accepts both ``owner/repo`` shorthand and full GitHub URLs (including
+    optional ``/tree/<branch>/<subdir>`` path components).
 
     Parameters
     ----------
     repos:
-        GitHub repos in ``owner/name`` format.  Defaults to
-        :data:`DEFAULT_REPOS` when ``None``.
+        GitHub repos or full GitHub URLs. When ``None`` and
+        *include_default* is ``True``, the built-in :data:`CTFGPT_REPOS`
+        list is used.
     urls:
-        Optional list of raw GitHub URLs to fetch individually.
+        Optional list of raw GitHub file URLs to fetch individually
+        (points to specific .md files, not repo pages).
     limit:
         Maximum total writeups from repo cloning.
+    include_default:
+        When ``True`` (default), always include :data:`CTFGPT_REPOS`
+        in addition to any *repos* argument.
 
     Returns
     -------
@@ -425,12 +506,22 @@ def run_github_loader(
     """
     all_writeups: list[dict] = []
 
+    # ── Build target repo list ─────────────────────────────────────────
+    target_repos: list[str] = []
+    if repos is not None:
+        target_repos.extend(repos)
+    if include_default:
+        for r in CTFGPT_REPOS:
+            if r not in target_repos:
+                target_repos.append(r)
+    if not target_repos:
+        target_repos = DEFAULT_REPOS
+
     # ── Clone and scan repos ──────────────────────────────────────────
-    target_repos = repos if repos is not None else DEFAULT_REPOS
     if target_repos:
         all_writeups.extend(load_from_repos(target_repos, limit=limit))
 
-    # ── Fetch individual URLs ─────────────────────────────────────────
+    # ── Fetch individual raw file URLs ────────────────────────────────
     if urls:
         all_writeups.extend(load_from_urls(urls))
 

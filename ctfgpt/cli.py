@@ -184,7 +184,7 @@ def ask(
 def ingest(
     source: str = typer.Option(
         "ctftime", "--source", "-s",
-        help="Data source: ctftime | github | hacktricks | pdf | all",
+        help="Data source: ctftime | github | hacktricks | hackingarticles | pdf | all",
     ),
     limit: int = typer.Option(
         500, "--limit", "-n",
@@ -209,12 +209,15 @@ def ingest(
     print_banner()
     console.print(f"[bold]>> Ingesting data from:[/bold] {source}  (limit: {limit})\n")
 
-    valid_sources = {"ctftime", "github", "hacktricks", "pdf", "all"}
+    valid_sources = {"ctftime", "github", "hacktricks", "hackingarticles", "pdf", "all"}
     if source not in valid_sources:
-        print_error("Invalid Source", f"Choose from: {', '.join(valid_sources)}")
+        print_error("Invalid Source", f"Choose from: {', '.join(sorted(valid_sources))}")
         raise typer.Exit(1)
 
-    sources_to_run = [source] if source != "all" else ["ctftime", "github", "hacktricks"]
+    sources_to_run = (
+        [source] if source != "all"
+        else ["ctftime", "github", "hacktricks", "hackingarticles"]
+    )
 
     from ctfgpt.config import DATA_DIR
     active_dirs = []
@@ -249,6 +252,15 @@ def ingest(
                 active_dirs.append(DATA_DIR / "hacktricks")
             except Exception as e:
                 print_error(f"HackTricks Error ({src})", str(e))
+                continue
+
+        elif src == "hackingarticles":
+            try:
+                from ingestion.scraper_hackingarticles import run_hackingarticles_scraper
+                run_hackingarticles_scraper(limit=limit)
+                active_dirs.append(DATA_DIR / "hackingarticles")
+            except Exception as e:
+                print_error(f"HackingArticles Error ({src})", str(e))
                 continue
 
         elif src == "pdf":
