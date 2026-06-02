@@ -211,12 +211,47 @@ graph TD
 | Command | Description |
 |---------|-------------|
 | `ctfgpt ask "query"` | Ask for a hint or trigger the agent (with `--agent`) |
+| `ctfgpt solve <target>` | Run a structured category-aware attack playbook |
 | `ctfgpt ingest` | Populate the vector database from various sources |
 | `ctfgpt status` | Check DB stats, LLM connectivity, and MCP status |
 | `ctfgpt config` | View or modify the configuration |
 | `ctfgpt history` | View a table of past sessions |
 | `ctfgpt report` | Generate and view a markdown report of an agent session |
 | `ctfgpt tools` | List all tools currently available via the Kali MCP server |
+
+## Solve Mode
+
+`ctfgpt solve` is a smarter, more opinionated alternative to `--agent`. Instead of letting the LLM freely decide what to run, it executes a **pre-defined playbook** of the best tools for each CTF category, in the optimal order.
+
+### Playbooks by Category
+
+| Category | Tools Executed (in order) |
+|----------|---------------------------|
+| `web` | curl headers → nikto → gobuster → robots.txt → source hints |
+| `forensics` | file → strings → xxd → binwalk → exiftool → steghide |
+| `pwn` | file → checksec → strings → nm → objdump → ltrace |
+| `reversing` | file → strings → readelf → nm → objdump → anti-debug check |
+| `crypto` | base64 decode → hex decode → ROT13 → Caesar brute → hashid |
+| `osint` | whois → nslookup → curl headers → gobuster dns → openssl cert |
+
+### Examples
+
+```bash
+# Web target — auto-detects category, runs web playbook
+ctfgpt solve http://10.10.11.230
+
+# Force forensics category on a file
+ctfgpt solve /home/kali/ctf/mystery.png --category forensics
+
+# Crypto challenge — brute-force common encodings
+ctfgpt solve "KHOOR ZRUOG" --category crypto
+
+# Preview all planned steps without executing
+ctfgpt solve 10.10.11.230 --dry-run
+
+# Run only the first 3 steps
+ctfgpt solve 10.10.11.230 --max-steps 3
+```
 
 ## Troubleshooting
 

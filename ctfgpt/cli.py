@@ -177,6 +177,126 @@ def ask(
         pass  # history saving is best-effort
 
 
+
+# ---------------------------------------------------------------------------
+# solve — structured category-aware attack playbook
+# ---------------------------------------------------------------------------
+@app.command()
+def solve(
+    target: str = typer.Argument(
+        ...,
+        help="IP address, URL, hostname, or cipher text to solve",
+    ),
+    category: Optional[str] = typer.Option(
+        None, "--category", "-c",
+        help="Force category: web | pwn | forensics | crypto | reversing | osint",
+    ),
+    file: Optional[str] = typer.Option(
+        None, "--file", "-f",
+        help="Path to the challenge file on Kali (e.g. /home/kali/ctf/challenge.exe)",
+    ),
+    max_steps: int = typer.Option(
+        6, "--max-steps", "-n",
+        help="Maximum number of playbook steps to execute (default: 6)",
+    ),
+    dry_run: bool = typer.Option(
+        False, "--dry-run",
+        help="Print the planned steps without executing them",
+    ),
+    scope: Optional[str] = typer.Option(
+        None, "--scope",
+        help="Restrict file operations to this Kali path",
+    ),
+) -> None:
+    """Run a structured, category-aware attack playbook against a CTF target.
+
+    Unlike --agent (open-ended), solve runs a predefined sequence of the
+    right tools for the detected category in the right order:
+    recon → enumeration → analysis → exploit → summary.
+
+    Examples:
+
+      ctfgpt solve 10.10.11.230              # auto-detect, run full playbook
+      ctfgpt solve http://target.thm --category web
+      ctfgpt solve /home/kali/ctf/flag.png --category forensics
+      ctfgpt solve "KHOOR ZRUOG" --category crypto
+      ctfgpt solve 10.10.11.230 --dry-run   # preview steps only
+    """
+    from ctfgpt.utils.rich_output import print_banner, print_hint, print_error
+    from ctfgpt.utils.safety import confirm_agent_mode
+    from ctfgpt.utils.history import save_session
+
+    print_banner()
+
+    # Confirmation panel
+    if not dry_run:
+        body = (
+            "[bold yellow]⚠  Solve mode will execute a security tool playbook on your Kali VM.[/bold yellow]\n\n"
+            f"[bold]Target:[/bold] {target}\n"
+            f"[bold]Category:[/bold] {category or 'auto-detect'}\n"
+            f"[bold]Max Steps:[/bold] {max_steps}\n"
+        )
+        if file:
+            body += f"[bold]File:[/bold] {file}\n"
+
+        console.print()
+        console.print(Panel(
+            body,
+            title="[bold yellow]🎯 CTF-GPT Solve Mode[/bold yellow]",
+            title_align="left",
+            border_style="yellow",
+            padding=(1, 2),
+        ))
+        console.print()
+
+        if not typer.confirm("[yellow]Continue with solve mode?[/yellow]", default=False):
+            console.print("[dim]Solve mode cancelled.[/dim]")
+            raise typer.Exit(0)
+
+    # Generate session ID
+    from datetime import datetime
+    session_id = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+    console.print(f"  [dim]Session:[/dim] {session_id}\n")
+
+    # Run the solver
+    try:
+        from ctfgpt.solver import run_solver
+        hint, session_id = run_solver(
+            target=target,
+            category=category,
+            file_path=file,
+            max_steps=max_steps,
+            dry_run=dry_run,
+            scope=scope,
+            session_id=session_id,
+        )
+    except Exception as exc:
+        print_error("Solver Error", str(exc))
+        raise typer.Exit(1)
+
+    # Display final hint
+    if hint:
+        print_hint(hint, category or "general", level=3)
+
+    # Save session
+    try:
+        save_session(
+            query=target,
+            category=category or "general",
+            mode="solve",
+            level=3,
+            response=hint,
+            session_id=session_id,
+        )
+    except Exception:
+        pass
+
+    console.print(
+        f"\n  [dim]Session saved: {session_id}[/dim]"
+        f"\n  [dim]Run: ctfgpt report --session {session_id}[/dim]\n"
+    )
+
+
 # ---------------------------------------------------------------------------
 # ingest — build/update the vector knowledge base
 # ---------------------------------------------------------------------------
