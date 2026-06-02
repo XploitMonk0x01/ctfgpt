@@ -197,8 +197,8 @@ def solve(
         help="Path to the challenge file on Kali (e.g. /home/kali/ctf/challenge.exe)",
     ),
     max_steps: int = typer.Option(
-        6, "--max-steps", "-n",
-        help="Maximum number of playbook steps to execute (default: 6)",
+        10, "--max-steps", "-n",
+        help="Maximum number of playbook steps to execute (default: 10)",
     ),
     dry_run: bool = typer.Option(
         False, "--dry-run",
