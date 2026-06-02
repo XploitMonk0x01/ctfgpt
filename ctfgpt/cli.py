@@ -234,6 +234,13 @@ def solve(
         if not target:
             console.print("[red]❌ Target is required to run solve mode.[/red]")
             raise typer.Exit(1)
+            
+        # QoL fix: if the user pastes "--category web" into the prompt, parse it
+        import re
+        cat_match = re.search(r'--category\s+([a-zA-Z0-9_-]+)', target)
+        if cat_match:
+            category = cat_match.group(1).lower()
+            target = target.replace(cat_match.group(0), "").strip()
 
     # Confirmation panel
     if not dry_run:
