@@ -231,12 +231,20 @@ def solve(
 
     # Confirmation panel
     if not dry_run:
+        from ctfgpt.solver import extract_target
+        clean_target, challenge_desc = extract_target(target)
+        display_desc = (challenge_desc[:120] + "...") if len(challenge_desc) > 120 else challenge_desc
+        
         body = (
             "[bold yellow]⚠  Solve mode will execute a security tool playbook on your Kali VM.[/bold yellow]\n\n"
-            f"[bold]Target:[/bold] {target}\n"
-            f"[bold]Category:[/bold] {category or 'auto-detect'}\n"
-            f"[bold]Max Steps:[/bold] {max_steps}\n"
+            f"[bold]Target:[/bold] {clean_target or 'None detected'}\n"
         )
+        if challenge_desc != clean_target:
+             body += f"[bold]Input Context:[/bold] {display_desc}\n"
+        
+        body += f"[bold]Category:[/bold] {category or 'auto-detect'}\n"
+        body += f"[bold]Max Steps:[/bold] {max_steps}\n"
+        
         if file:
             body += f"[bold]File:[/bold] {file}\n"
 

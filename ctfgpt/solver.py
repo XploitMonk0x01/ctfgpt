@@ -30,6 +30,56 @@ from rich.table import Table
 
 console = Console(force_terminal=True)
 
+
+# ---------------------------------------------------------------------------
+# Smart Target Extraction
+# ---------------------------------------------------------------------------
+
+def extract_target(raw_input: str) -> tuple[str, str]:
+    """Extract the actionable target (IP/URL/domain) from free-text input.
+
+    Returns ``(target, challenge_description)`` where *target* is the
+    clean IP, URL, or domain to plug into commands, and
+    *challenge_description* is the full original text for RAG context.
+
+    Detection priority:
+    1. Full URL  (http://..., https://...)
+    2. IPv4 address  (10.10.11.230)
+    3. Domain / hostname  (smol.thm, target.htb)
+    4. Fallback: use the raw input as-is
+    """
+    desc = raw_input.strip()
+
+    # 1. Full URL
+    url_match = re.search(r'(https?://[^\s,;"\')]+)', desc)
+    if url_match:
+        return url_match.group(1).rstrip('.,;'), desc
+
+    # 2. IPv4 address
+    ip_match = re.search(r'\b(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})\b', desc)
+    if ip_match:
+        return ip_match.group(1), desc
+
+    # 3. Domain / hostname  (word.tld pattern, especially .thm .htb .com etc)
+    domain_match = re.search(
+        r'\b([a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?'
+        r'\.[a-zA-Z]{2,})\b',
+        desc,
+    )
+    if domain_match:
+        candidate = domain_match.group(1).lower()
+        # Skip common false positives that are not actual targets
+        skip = {'wordpress.com', 'github.com', 'example.com', 'google.com'}
+        if candidate not in skip:
+            return candidate, desc
+
+    # 4. Fallback: if the input is short enough, treat it as the target
+    if len(desc) < 120:
+        return desc, desc
+
+    # 5. Long text with no detectable target — return empty and warn
+    return '', desc
+
 # ---------------------------------------------------------------------------
 # Tool Step definition
 # ---------------------------------------------------------------------------
@@ -52,12 +102,14 @@ class ToolStep:
 PLAYBOOKS: dict[str, list[ToolStep]] = {
 
     "web": [
-        ToolStep("HTTP Headers",      "curl -sI {target}",                          "Check server, tech stack, cookies",    phase="recon"),
-        ToolStep("Nikto Scan",        "nikto -h {target} -nossl -timeout 10",       "Find common vulns & misconfigs",       phase="recon"),
-        ToolStep("Dir Bust",          "gobuster dir -u {target} -w /usr/share/wordlists/dirb/common.txt -q -t 20 --timeout 10s", "Discover hidden paths", phase="enum"),
-        ToolStep("robots.txt",        "curl -s {target}/robots.txt",                "Check disallowed paths",               phase="enum",  required=False),
-        ToolStep("Cookies & Auth",    "curl -sv {target} 2>&1 | grep -iE 'set-cookie|authorization|location'", "Check auth flow", phase="enum", required=False),
-        ToolStep("Source Hints",      "curl -s {target} | grep -iE 'flag|ctf|secret|pass|token|admin|TODO|FIXME'", "Look for flags/hints in HTML", phase="exploit", required=False),
+        ToolStep("Port Scan",         "nmap -sCV -T4 --top-ports 1000 {target}",    "Discover open ports & services",       phase="recon", timeout=120),
+        ToolStep("HTTP Headers",      "curl -sI http://{target}",                   "Check server, tech stack, cookies",    phase="recon"),
+        ToolStep("Nikto Scan",        "nikto -h http://{target} -nossl -timeout 10","Find common vulns & misconfigs",       phase="recon", timeout=120),
+        ToolStep("Dir Bust",          "gobuster dir -u http://{target} -w /usr/share/wordlists/dirb/common.txt -q -t 20 --timeout 10s", "Discover hidden paths", phase="enum", timeout=120),
+        ToolStep("robots.txt",        "curl -s http://{target}/robots.txt",         "Check disallowed paths",               phase="enum",  required=False),
+        ToolStep("WPScan",            "wpscan --url http://{target} --enumerate vp,vt,u --no-banner", "WordPress vuln scan (plugins, themes, users)", phase="enum", timeout=180, required=False),
+        ToolStep("Cookies & Auth",    "curl -sv http://{target} 2>&1 | grep -iE 'set-cookie|authorization|location'", "Check auth flow", phase="enum", required=False),
+        ToolStep("Source Hints",      "curl -s http://{target} | grep -iE 'flag|ctf|secret|pass|token|admin|TODO|FIXME'", "Look for flags/hints in HTML", phase="exploit", required=False),
     ],
 
     "forensics": [
@@ -155,7 +207,8 @@ def run_solver(
     Parameters
     ----------
     target:
-        IP, URL, or cipher text / puzzle description.
+        IP, URL, domain, cipher text, or full challenge description.
+        IPs/URLs/domains are extracted automatically.
     category:
         CTF category. Auto-detected if ``None``.
     file_path:
@@ -173,9 +226,21 @@ def run_solver(
     from ctfgpt.blackboard import Blackboard
     from ctfgpt.rag import ask as rag_ask
 
+    # --- Extract actionable target from input --------------------------------
+    clean_target, challenge_desc = extract_target(target)
+
+    if not clean_target:
+        console.print("[red]❌ Could not detect an IP, URL, or domain in your input.[/red]")
+        console.print("[yellow]   Tip: pass the target directly, e.g. ctfgpt solve 10.10.11.230[/yellow]")
+        return "No actionable target found in input.", session_id
+
+    console.print(f"  [dim]Extracted target:[/dim] [bold green]{clean_target}[/bold green]")
+    if challenge_desc != clean_target:
+        console.print(f"  [dim]Challenge context:[/dim] {challenge_desc[:120]}…")
+
     # --- Auto-detect category -----------------------------------------------
     if not category:
-        query_for_classify = f"{target} {file_path or ''}"
+        query_for_classify = f"{challenge_desc} {file_path or ''}"
         category = classify(query_for_classify)
         console.print(f"  [dim]Auto-detected category:[/dim] [bold cyan]{category}[/bold cyan]")
 
@@ -184,7 +249,7 @@ def run_solver(
     console.print(f"  [dim]Playbook:[/dim] [bold]{len(steps)} steps[/bold] for [bold cyan]{category}[/bold cyan]\n")
 
     # --- Blackboard ---------------------------------------------------------
-    bb = Blackboard(session_id=session_id, category=category, challenge_desc=target)
+    bb = Blackboard(session_id=session_id, category=category, challenge_desc=challenge_desc)
 
     # --- Print dry-run table ------------------------------------------------
     if dry_run:
@@ -193,7 +258,7 @@ def run_solver(
         table.add_column("Step", style="bold")
         table.add_column("Command")
         for step in steps:
-            cmd = _render_command(step.command_template, target, file_path)
+            cmd = _render_command(step.command_template, clean_target, file_path)
             table.add_row(step.phase, step.name, cmd)
         console.print(table)
         return f"[Dry run] {len(steps)} steps planned for category '{category}'", session_id
@@ -212,7 +277,7 @@ def run_solver(
 
     for step in steps:
         step_count += 1
-        cmd = _render_command(step.command_template, target, file_path)
+        cmd = _render_command(step.command_template, clean_target, file_path)
 
         # Phase header
         if step.phase != last_phase:
@@ -256,7 +321,12 @@ def run_solver(
     console.print("  [dim]Combining evidence with RAG writeup context…[/dim]\n")
 
     evidence_text = bb.summary()
-    query = f"Solve this {category} CTF challenge: {target}\n\nEvidence collected:\n{evidence_text}"
+    query = (
+        f"Solve this {category} CTF challenge.\n"
+        f"Target: {clean_target}\n"
+        f"Description: {challenge_desc[:500]}\n\n"
+        f"Evidence collected:\n{evidence_text}"
+    )
 
     try:
         hint, _sources = rag_ask(
