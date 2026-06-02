@@ -54,7 +54,7 @@ class KaliMCPClient:
         """
         try:
             r = self._client.post(
-                "/execute",
+                "/api/command",
                 json={"command": command},
                 timeout=timeout or self.timeout,
             )

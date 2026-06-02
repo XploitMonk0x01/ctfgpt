@@ -53,13 +53,18 @@ Category: {category}
 Current Evidence: {blackboard_summary}
 RAG Context: {rag_context}
 Iteration: {iteration}/{max_iterations}
+Previously executed commands: {executed_commands}
 
-IMPORTANT: Do NOT repeat a command that already failed or produced no results.
-If a command failed, try a DIFFERENT approach.
+RULES:
+1. Do NOT repeat any command from the "Previously executed commands" list.
+2. If a command already produced useful output that answers the challenge,
+   respond with RESPOND — do not run the same command again.
+3. If a command failed, try a completely DIFFERENT tool or approach.
+4. Only use TOOL if you need NEW information not already in Current Evidence.
 
 Respond with EXACTLY one of:
-TOOL: <command> — to run a tool on Kali
-RESPOND — if you have enough evidence to give a hint
+TOOL: <command> — to run a NEW tool on Kali (must differ from previous)
+RESPOND — if you have enough evidence to answer the challenge
 
 If using TOOL, provide the exact command (e.g., TOOL: nmap -sV target)
 """
@@ -155,6 +160,14 @@ def plan_node(state: AgentState) -> dict:
         except Exception:
             rag_context = "RAG unavailable — no writeup context."
 
+    # Build list of previously executed commands to prevent repetition
+    executed_cmds = []
+    for f in state.get("findings", []):
+        cmd = f.get("command", "") if isinstance(f, dict) else ""
+        if cmd and cmd not in executed_cmds:
+            executed_cmds.append(cmd)
+    executed_commands_str = ", ".join(executed_cmds) if executed_cmds else "(none yet)"
+
     prompt_text = _PLAN_PROMPT.format(
         query=state["query"],
         category=state["category"],
@@ -162,6 +175,7 @@ def plan_node(state: AgentState) -> dict:
         rag_context=rag_context,
         iteration=state["iteration"],
         max_iterations=state["max_iterations"],
+        executed_commands=executed_commands_str,
     )
 
     try:
@@ -180,6 +194,14 @@ def plan_node(state: AgentState) -> dict:
     # Parse the LLM decision
     if response.upper().startswith("TOOL:"):
         command = response[5:].strip()
+        # Prevent repeating the same command
+        if command in executed_cmds:
+            console.print(f"  [yellow]⚠  Agent tried to repeat: {command} — forcing response.[/yellow]")
+            return {
+                "next_action": "respond",
+                "command": "",
+                "rag_context": rag_context,
+            }
         console.print(f"  [dim]Planned command:[/dim] [bold]{command}[/bold]")
         return {
             "next_action": "run_tool",
@@ -257,8 +279,9 @@ def execute_node(state: AgentState) -> dict:
         result_dict = client.execute(command)
 
         # extract output from the response dict
-        output = result_dict.get("output", "")
-        err = result_dict.get("error", "")
+        # kali-server-mcp returns: stdout, stderr, return_code, success
+        output = result_dict.get("stdout", "")
+        err = result_dict.get("stderr", "")
         if err and not output:
             console.print(f"  [red]⚠  Remote error: {err}[/red]")
             return {"tool_output": "", "error": f"Remote: {err}"}
@@ -384,9 +407,13 @@ def observe_node(state: AgentState) -> dict:
     bb.write_finding(tool_name, state["command"], analysis, weight=rating_weight)
 
     # Decide whether to continue or respond
-    if bb.has_sufficient_evidence(threshold=0.85) and iteration >= 2:
+    if rating_weight > 0.8:
+        # HIGH relevance finding — we likely have the answer
         next_action = "respond"
         console.print("  [green]High-value evidence found — preparing response.[/green]")
+    elif bb.has_sufficient_evidence(threshold=0.7) and iteration >= 2:
+        next_action = "respond"
+        console.print("  [green]Sufficient evidence gathered — preparing response.[/green]")
     elif iteration >= state["max_iterations"]:
         next_action = "respond"
     else:
