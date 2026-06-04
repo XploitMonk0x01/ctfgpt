@@ -14,6 +14,17 @@ deepseek:
   model: deepseek-chat       # deepseek-chat (V3, fast) | deepseek-reasoner (R1, deep thinking)
   # DEEPSEEK_API_KEY -> set as env var, never in this file
 
+# Per-role model selection (overrides cloud.provider for specific roles)
+# Set to "deepseek" or "groq" per role. null = use cloud.provider default.
+models:
+  planner: null              # Plan generation & re-planning (deep reasoning)
+  observer: null             # Tool output observation (fast summaries)
+  responder: null            # Final hint/report generation (quality output)
+  # Example: use DeepSeek for planning, Groq for fast observation:
+  # planner: deepseek
+  # observer: groq
+  # responder: deepseek
+
 local:
   model: mistral
   embed_model: nomic-embed-text
@@ -24,9 +35,10 @@ embedding:
   model: all-MiniLM-L6-v2
 
 # MCP configuration - points to official mcp-kali-server
+# VirtualBox NAT Network: Windows:127.0.0.1:5000 -> Kali:10.0.2.15:5000
 mcp:
-  enabled: false             # opt-in, false by default
-  host: localhost            # localhost via SSH tunnel
+  enabled: true              # connected to Kali via VirtualBox NAT port forward
+  host: "127.0.0.1"          # VirtualBox port forwarding handles the tunnel
   port: 5000                 # kali-server-mcp default port
   timeout: 30
   scope: null                # null = no restriction

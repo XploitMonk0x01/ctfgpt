@@ -179,7 +179,7 @@ def plan_node(state: AgentState) -> dict:
     )
 
     try:
-        llm = get_llm()
+        llm = get_llm(role="planner")
         response: str = llm.invoke(prompt_text)
 
         # LangChain models may return AIMessage or str
@@ -398,7 +398,7 @@ def observe_node(state: AgentState) -> dict:
     )
 
     try:
-        llm = get_llm()
+        llm = get_llm(role="observer")
         analysis: str = llm.invoke(prompt_text)
 
         if hasattr(analysis, "content"):

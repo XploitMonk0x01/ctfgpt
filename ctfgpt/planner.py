@@ -302,7 +302,7 @@ def run_planner(
     )
 
     try:
-        llm = get_llm()
+        llm = get_llm(role="planner")
         raw_plan = llm.invoke(plan_prompt)
         if hasattr(raw_plan, "content"):
             raw_plan = raw_plan.content
@@ -395,7 +395,7 @@ def run_planner(
         # --- Re-plan after each step ----------------------------------------
         if current_idx < len(steps) - 1:
             replan_decision = _replan(
-                llm=get_llm(),
+                llm=get_llm(role="observer"),
                 category=category,
                 target=clean_target,
                 challenge_desc=challenge_desc,

@@ -239,7 +239,7 @@ def ask(
         ``(hint_text, source_urls)`` — the generated hint and a list of
         source references extracted from the retrieved documents.
     """
-    llm = get_llm()
+    llm = get_llm(role="responder")
     rag_context: str = _NO_DOCS_NOTICE
     sources: list[str] = []
 

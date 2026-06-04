@@ -58,6 +58,11 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "provider": "groq",
         "model": "llama-3.3-70b-versatile",
     },
+    "models": {
+        "planner": None,       # None = use cloud.provider default
+        "observer": None,
+        "responder": None,
+    },
     "local": {
         "model": "mistral",
         "embed_model": "nomic-embed-text",
@@ -150,8 +155,20 @@ def load_config(*, force_reload: bool = False) -> dict[str, Any]:
 # Factory helpers
 # ---------------------------------------------------------------------------
 
-def get_llm():
+def get_llm(role: str = "default"):
     """Return a LangChain LLM instance based on the current mode.
+
+    Parameters
+    ----------
+    role:
+        The role requesting the LLM. Supported roles:
+        ``"planner"`` — plan generation & re-planning (deep reasoning)
+        ``"observer"`` — tool output observation (fast summaries)
+        ``"responder"`` — final hint generation (quality output)
+        ``"default"`` — uses the global ``cloud.provider`` setting
+
+        When a role has a provider configured in ``config.models.<role>``,
+        that provider is used. Otherwise falls back to ``cloud.provider``.
 
     The mode is resolved as:
         ``LLM_MODE`` env var  →  ``config["llm_mode"]``  →  ``"cloud"``
@@ -165,26 +182,15 @@ def get_llm():
     mode = os.getenv("LLM_MODE", cfg.get("llm_mode", "cloud"))
 
     if mode == "cloud":
-        provider = cfg.get("cloud", {}).get("provider", "groq")
+        # Resolve provider: role-specific override → global default
+        default_provider = cfg.get("cloud", {}).get("provider", "groq")
+        role_provider = None
+        if role != "default":
+            role_provider = cfg.get("models", {}).get(role)
+        provider = role_provider or default_provider
 
-        if provider == "deepseek":
-            from langchain_openai import ChatOpenAI  # type: ignore[import-untyped]
+        return _build_cloud_llm(cfg, provider)
 
-            return ChatOpenAI(
-                model=cfg.get("deepseek", {}).get("model", "deepseek-chat"),
-                api_key=os.getenv("DEEPSEEK_API_KEY"),
-                base_url="https://api.deepseek.com",
-                temperature=0.3,
-            )
-        else:
-            # Default: Groq
-            from langchain_groq import ChatGroq  # type: ignore[import-untyped]
-
-            return ChatGroq(
-                model=cfg["cloud"]["model"],
-                api_key=os.getenv("GROQ_API_KEY"),
-                temperature=0.3,
-            )
     elif mode == "local":
         from langchain_ollama import OllamaLLM  # type: ignore[import-untyped]
 
@@ -194,6 +200,28 @@ def get_llm():
         )
     else:
         raise ValueError(f"Unknown LLM_MODE: {mode}")
+
+
+def _build_cloud_llm(cfg: dict[str, Any], provider: str):
+    """Instantiate a cloud LLM for the given provider name."""
+    if provider == "deepseek":
+        from langchain_openai import ChatOpenAI  # type: ignore[import-untyped]
+
+        return ChatOpenAI(
+            model=cfg.get("deepseek", {}).get("model", "deepseek-chat"),
+            api_key=os.getenv("DEEPSEEK_API_KEY"),
+            base_url="https://api.deepseek.com",
+            temperature=0.3,
+        )
+    else:
+        # Default: Groq
+        from langchain_groq import ChatGroq  # type: ignore[import-untyped]
+
+        return ChatGroq(
+            model=cfg.get("cloud", {}).get("model", "llama-3.3-70b-versatile"),
+            api_key=os.getenv("GROQ_API_KEY"),
+            temperature=0.3,
+        )
 
 
 def get_embeddings():
