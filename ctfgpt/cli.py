@@ -320,6 +320,135 @@ def solve(
 
 
 # ---------------------------------------------------------------------------
+# plan — dynamic LLM-driven attack planner
+# ---------------------------------------------------------------------------
+@app.command()
+def plan(
+    target: Optional[str] = typer.Argument(
+        None,
+        help="IP address, URL, domain, or challenge description",
+    ),
+    category: Optional[str] = typer.Option(
+        None, "--category", "-c",
+        help="Force category: web | pwn | forensics | crypto | reversing | osint",
+    ),
+    file: Optional[str] = typer.Option(
+        None, "--file", "-f",
+        help="Path to the challenge file on Kali",
+    ),
+    max_steps: int = typer.Option(
+        8, "--max-steps", "-n",
+        help="Maximum number of plan steps to generate (default: 8)",
+    ),
+) -> None:
+    """Generate and execute an adaptive, LLM-driven attack plan.
+
+    Unlike 'solve' (static playbook) or 'ask --agent' (open-ended),
+    'plan' asks the LLM to generate a concrete attack plan FIRST,
+    shows it to you for approval, then executes step by step with
+    adaptive re-planning after each tool output.
+
+    The planner can INSERT new steps, REPLAN remaining steps, or
+    decide it's DONE early if it finds the flag.
+
+    Examples:
+
+      ctfgpt plan 10.10.11.230 --category web
+      ctfgpt plan smol.thm --category web
+      ctfgpt plan                                  # prompts for target
+      ctfgpt plan "challenge description with IP"
+    """
+    from ctfgpt.utils.rich_output import print_banner, print_hint, print_error
+
+    print_banner()
+
+    if not target:
+        target = typer.prompt("Enter target (IP, URL, domain, or challenge description)")
+        if not target:
+            console.print("[red]❌ Target is required.[/red]")
+            raise typer.Exit(1)
+
+        # Parse --category from prompt input if present
+        import re as _re
+        cat_match = _re.search(r'--category\s+([a-zA-Z0-9_-]+)', target)
+        if cat_match:
+            category = cat_match.group(1).lower()
+            target = target.replace(cat_match.group(0), "").strip()
+
+    # Confirmation panel
+    from ctfgpt.solver import extract_target
+    clean_target, challenge_desc = extract_target(target)
+    display_desc = (challenge_desc[:120] + "...") if len(challenge_desc) > 120 else challenge_desc
+
+    body = (
+        "[bold cyan]🗺️  Plan mode will generate an LLM attack plan and execute it on your Kali VM.[/bold cyan]\n\n"
+        f"[bold]Target:[/bold] {clean_target or 'None detected'}\n"
+    )
+    if challenge_desc != clean_target:
+        body += f"[bold]Context:[/bold] {display_desc}\n"
+    body += f"[bold]Category:[/bold] {category or 'auto-detect'}\n"
+    body += f"[bold]Max Steps:[/bold] {max_steps}\n"
+    if file:
+        body += f"[bold]File:[/bold] {file}\n"
+
+    console.print()
+    console.print(Panel(
+        body,
+        title="[bold cyan]🗺️  CTF-GPT Plan Mode[/bold cyan]",
+        title_align="left",
+        border_style="cyan",
+        padding=(1, 2),
+    ))
+    console.print()
+
+    if not typer.confirm("[cyan]Continue with plan mode?[/cyan]", default=True):
+        console.print("[dim]Plan mode cancelled.[/dim]")
+        raise typer.Exit(0)
+
+    # Generate session ID
+    from datetime import datetime
+    session_id = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+    console.print(f"  [dim]Session:[/dim] {session_id}\n")
+
+    # Run the planner
+    try:
+        from ctfgpt.planner import run_planner
+        hint, session_id = run_planner(
+            target=target,
+            category=category,
+            file_path=file,
+            max_steps=max_steps,
+            session_id=session_id,
+        )
+    except Exception as exc:
+        print_error("Planner Error", str(exc))
+        raise typer.Exit(1)
+
+    # Display final hint
+    if hint:
+        print_hint(hint, category or "general", level=3)
+
+    # Save session
+    try:
+        from ctfgpt.utils.history import save_session
+        save_session(
+            query=target,
+            category=category or "general",
+            mode="plan",
+            level=3,
+            response=hint,
+            session_id=session_id,
+        )
+    except Exception:
+        pass
+
+    console.print(
+        f"\n  [dim]Session saved: {session_id}[/dim]"
+        f"\n  [dim]Run: ctfgpt report --session {session_id}[/dim]\n"
+    )
+
+
+# ---------------------------------------------------------------------------
 # ingest — build/update the vector knowledge base
 # ---------------------------------------------------------------------------
 @app.command()
