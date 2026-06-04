@@ -56,9 +56,9 @@ pip install -e .
 Set your API keys as environment variables. For example, using Groq:
 
 ```bash
-export GROQ_API_KEY="gsk_your_groq_key"
+export GROQ_API_KEY="<your_groq_api_key>"
 # or for DeepSeek:
-export DEEPSEEK_API_KEY="sk_your_deepseek_key"
+export DEEPSEEK_API_KEY="<your_deepseek_api_key>"
 ```
 
 ### 4. Configure CTF-GPT

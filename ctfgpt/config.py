@@ -209,7 +209,7 @@ def _build_cloud_llm(cfg: dict[str, Any], provider: str):
 
         return ChatOpenAI(
             model=cfg.get("deepseek", {}).get("model", "deepseek-chat"),
-            api_key=os.getenv("DEEPSEEK_API_KEY"),
+            api_key=os.getenv("DEEPSEEK_API_KEY", "dummy"),
             base_url="https://api.deepseek.com",
             temperature=0.3,
         )
