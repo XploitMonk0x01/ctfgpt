@@ -447,6 +447,69 @@ def plan(
         f"\n  [dim]Run: ctfgpt report --session {session_id}[/dim]\n"
     )
 
+# ---------------------------------------------------------------------------
+# auto — multi-agent autonomous mode
+# ---------------------------------------------------------------------------
+@app.command()
+def auto(
+    target: Optional[str] = typer.Argument(
+        None,
+        help="IP address, URL, domain, or challenge description",
+    ),
+    category: Optional[str] = typer.Option(
+        None, "--category", "-c",
+        help="Force category: web | pwn | forensics | crypto | reversing | osint",
+    ),
+) -> None:
+    """Run in fully autonomous multi-agent mode.
+    
+    A Router agent will analyze the target and delegate tasks to 
+    specialized sub-agents (Recon, Exploit, PrivEsc).
+    """
+    from ctfgpt.utils.rich_output import print_banner, print_error
+
+    print_banner()
+
+    if not target:
+        target = typer.prompt("Enter target (IP, URL, domain, or challenge description)")
+        if not target:
+            console.print("[red]❌ Target is required.[/red]")
+            raise typer.Exit(1)
+            
+    # Extract target
+    from ctfgpt.solver import extract_target
+    clean_target, challenge_desc = extract_target(target)
+    
+    if not category:
+        from ctfgpt.classifier import classify
+        category = classify(challenge_desc)
+
+    console.print(Panel(
+        f"[bold]Target:[/bold] {clean_target or 'None'}\n"
+        f"[bold]Category:[/bold] {category}",
+        title="[bold cyan]🤖 CTF-GPT Auto Mode[/bold cyan]",
+        border_style="cyan"
+    ))
+
+    if not typer.confirm("[cyan]Start multi-agent attack?[/cyan]", default=True):
+        raise typer.Exit(0)
+
+    from datetime import datetime
+    session_id = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+    
+    try:
+        from ctfgpt.agents.router import MultiAgentRouter
+        router = MultiAgentRouter(
+            target=clean_target or target,
+            category=category,
+            session_id=session_id
+        )
+        result = router.run()
+        console.print(f"\n[bold green]Final Result:[/bold green]\n{result}")
+    except Exception as exc:
+        print_error("Multi-Agent Error", str(exc))
+        raise typer.Exit(1)
+
 
 # ---------------------------------------------------------------------------
 # ingest — build/update the vector knowledge base

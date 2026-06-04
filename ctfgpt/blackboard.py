@@ -29,6 +29,7 @@ _MAX_RESULT_LEN: int = 1000
 class Finding:
     """A single piece of evidence produced by a tool."""
 
+    agent: str          # e.g. "recon", "exploit", "default"
     tool: str           # e.g. "nmap", "gobuster"
     command: str        # full command string
     result: str         # truncated output (max 1000 chars)
@@ -82,10 +83,12 @@ class Blackboard:
         command: str,
         result: str,
         weight: float = 0.8,
+        agent: str = "default",
     ) -> None:
         """Append a new finding, increment iteration, and auto-save."""
         self.iteration += 1
         finding = Finding(
+            agent=agent,
             tool=tool,
             command=command,
             result=result[:_MAX_RESULT_LEN],

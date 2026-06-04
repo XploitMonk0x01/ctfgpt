@@ -213,6 +213,7 @@ graph TD
 | `ctfgpt ask "query"` | Ask for a hint or trigger the agent (with `--agent`) |
 | `ctfgpt solve <target>` | Run a structured category-aware attack playbook |
 | `ctfgpt plan <target>` | Generate and execute an adaptive LLM-driven attack plan |
+| `ctfgpt auto <target>` | Run the autonomous Multi-Agent System (Router + Sub-Agents) |
 | `ctfgpt ingest` | Populate the vector database from various sources |
 | `ctfgpt status` | Check DB stats, LLM connectivity, and MCP status |
 | `ctfgpt config` | View or modify the configuration |
@@ -280,6 +281,22 @@ ctfgpt plan "WordPress site at smol.thm with vulnerable plugins"
 
 # Interactive mode (prompts for target)
 ctfgpt plan
+```
+
+## Auto Mode
+
+`ctfgpt auto` unleashes the Multi-Agent System. Instead of a single agent doing everything, the system spins up specialized sub-agents:
+- **Router**: Analyzes the evidence and delegates tasks to the best sub-agent
+- **Recon Agent**: Focused entirely on safe enumeration (nmap, gobuster, etc.)
+- **Exploit Agent**: Focused on gaining initial access (sqlmap, msfconsole, etc.)
+- **PrivEsc Agent**: Focused on local privilege escalation to root (linpeas, sudo, etc.)
+
+Each agent runs its own ReAct loop with a strictly enforced whitelist of allowed tools. They share state through a unified Blackboard.
+
+### Examples
+
+```bash
+ctfgpt auto 10.10.11.230
 ```
 
 ## Troubleshooting
