@@ -212,6 +212,7 @@ graph TD
 |---------|-------------|
 | `ctfgpt ask "query"` | Ask for a hint or trigger the agent (with `--agent`) |
 | `ctfgpt solve <target>` | Run a structured category-aware attack playbook |
+| `ctfgpt plan <target>` | Generate and execute an adaptive LLM-driven attack plan |
 | `ctfgpt ingest` | Populate the vector database from various sources |
 | `ctfgpt status` | Check DB stats, LLM connectivity, and MCP status |
 | `ctfgpt config` | View or modify the configuration |
@@ -251,6 +252,34 @@ ctfgpt solve 10.10.11.230 --dry-run
 
 # Run only the first 3 steps
 ctfgpt solve 10.10.11.230 --max-steps 3
+```
+
+## Plan Mode
+
+`ctfgpt plan` is the most intelligent attack mode. Unlike `solve` (static playbook) or `--agent` (open-ended), it asks the LLM to **generate a concrete attack plan first**, shows it to you, then executes step by step with **adaptive re-planning** after each tool output.
+
+### How It Works
+
+1. **Plan Generation** — LLM creates a numbered attack plan based on your target, category, and RAG context
+2. **User Approval** — Full plan displayed in a table for review before execution
+3. **Adaptive Execution** — After each step, the LLM evaluates the output and can:
+   - `CONTINUE` — proceed to the next step
+   - `INSERT` — add an urgent new step (e.g., update `/etc/hosts` after a redirect)
+   - `REPLAN` — revise the entire remaining plan based on new evidence
+   - `DONE` — stop early if the flag is found
+4. **Final Summary** — RAG-grounded solution summary from all evidence
+
+### Examples
+
+```bash
+# Web target with adaptive planning
+ctfgpt plan 10.10.11.230 --category web
+
+# Let it auto-detect category from description
+ctfgpt plan "WordPress site at smol.thm with vulnerable plugins"
+
+# Interactive mode (prompts for target)
+ctfgpt plan
 ```
 
 ## Troubleshooting
