@@ -16,6 +16,10 @@ import os
 from pathlib import Path
 from typing import Any
 
+# Module-level LLM cache keyed by (mode, role, provider) to avoid
+# re-instantiating the LangChain client on every get_llm() call
+_llm_cache: dict[tuple, Any] = {}
+
 import yaml
 
 # ---------------------------------------------------------------------------
@@ -140,7 +144,7 @@ def load_config(*, force_reload: bool = False) -> dict[str, Any]:
         with config_path.open("r", encoding="utf-8") as fh:
             loaded: dict[str, Any] = yaml.safe_load(fh) or {}
         # Merge: loaded values override defaults
-        merged = {**DEFAULT_CONFIG, **loaded}
+        merged = _deep_merge(DEFAULT_CONFIG, loaded)
     else:
         merged = dict(DEFAULT_CONFIG)
 
@@ -149,6 +153,21 @@ def load_config(*, force_reload: bool = False) -> dict[str, Any]:
 
 
 
+def _deep_merge(base: dict, override: dict) -> dict:
+    """Recursively merge *override* into *base*, preserving nested keys.
+
+    A shallow ``{**base, **override}`` would drop nested keys not present in
+    *override*. For example, if base has ``cloud: {provider: groq, model: X}``
+    and override only sets ``cloud: {model: Y}``, the result preserves
+    ``provider: groq`` from the base.
+    """
+    result = dict(base)
+    for k, v in override.items():
+        if k in result and isinstance(result[k], dict) and isinstance(v, dict):
+            result[k] = _deep_merge(result[k], v)
+        else:
+            result[k] = v
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -189,15 +208,20 @@ def get_llm(role: str = "default"):
             role_provider = cfg.get("models", {}).get(role)
         provider = role_provider or default_provider
 
-        return _build_cloud_llm(cfg, provider)
+        cache_key = (mode, role, provider)
+        if cache_key not in _llm_cache:
+            _llm_cache[cache_key] = _build_cloud_llm(cfg, provider)
+        return _llm_cache[cache_key]
 
     elif mode == "local":
-        from langchain_ollama import OllamaLLM  # type: ignore[import-untyped]
-
-        return OllamaLLM(
-            model=cfg["local"]["model"],
-            base_url=cfg["local"]["base_url"],
-        )
+        cache_key = (mode, role, "local")
+        if cache_key not in _llm_cache:
+            from langchain_ollama import OllamaLLM  # type: ignore[import-untyped]
+            _llm_cache[cache_key] = OllamaLLM(
+                model=cfg["local"]["model"],
+                base_url=cfg["local"]["base_url"],
+            )
+        return _llm_cache[cache_key]
     else:
         raise ValueError(f"Unknown LLM_MODE: {mode}")
 

@@ -6,6 +6,7 @@ the configured LLM.  Falls back gracefully to a pure-LLM answer when
 the knowledge base is empty or inaccessible.
 """
 
+from functools import lru_cache
 from typing import Optional
 
 from langchain_chroma import Chroma
@@ -70,6 +71,7 @@ _NO_DOCS_NOTICE = (
 # 1. Vectorstore access
 # ---------------------------------------------------------------------------
 
+@lru_cache(maxsize=8)
 def get_vectorstore(category: str) -> Chroma:
     """Return a ChromaDB vectorstore for the given CTF category.
 
@@ -252,10 +254,8 @@ def ask(
             rag_context = format_docs(docs)
             sources = _extract_sources(docs)
     except Exception as exc:  # noqa: BLE001
-        console.print(
-            f"[dim yellow]⚠  ChromaDB retrieval failed ({exc}). "
-            f"Falling back to pure LLM.[/dim yellow]"
-        )
+        console.print(f"[dim yellow]⚠  Retrieval failed ({exc}) — using LLM only.[/dim yellow]")
+        rag_context = "Context retrieval temporarily unavailable — answer using general knowledge."
 
     # --- Build prompt & call LLM ------------------------------------------
     prompt_text = build_prompt(
@@ -271,7 +271,6 @@ def ask(
         # LangChain re-parsing { } characters in RAG content (code, JSON etc)
         messages = [
             SystemMessage(content=prompt_text),
-            HumanMessage(content=query),
         ]
         response_msg = llm.invoke(messages)
         # LangChain models return AIMessage; Groq returns str directly

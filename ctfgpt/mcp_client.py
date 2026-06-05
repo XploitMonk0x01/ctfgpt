@@ -37,7 +37,7 @@ class KaliMCPClient:
         try:
             r = self._client.get("/health")
             return r.status_code == 200
-        except httpx.HTTPError:
+        except (httpx.HTTPError, httpx.TransportError):
             return False
 
     # -- command execution --------------------------------------------------
@@ -59,11 +59,11 @@ class KaliMCPClient:
                 timeout=timeout or self.timeout,
             )
             r.raise_for_status()
-            return r.json()
+            return self._normalize(r.json())
         except httpx.TimeoutException as exc:
-            return {"output": "", "error": f"Timeout: {exc}", "returncode": -1}
+            return {"stdout": "", "stderr": f"Timeout: {exc}", "returncode": -1, "success": False}
         except httpx.HTTPError as exc:
-            return {"output": "", "error": str(exc), "returncode": -1}
+            return {"stdout": "", "stderr": str(exc), "returncode": -1, "success": False}
 
     # -- tool listing -------------------------------------------------------
 
@@ -79,6 +79,33 @@ class KaliMCPClient:
             return data.get("tools", [])
         except httpx.HTTPError:
             return []
+
+    # -- lifecycle ----------------------------------------------------------
+
+    @staticmethod
+    def _normalize(raw: dict) -> dict:
+        """Normalize MCP server response to a consistent schema.
+
+        The kali-mcp-server may return either:
+        - ``{output, error, returncode}``  (original)
+        - ``{stdout, stderr, return_code, success}`` (v2+)
+
+        This method always returns ``{stdout, stderr, returncode, success}``.
+        """
+        # v2 format already uses stdout/stderr
+        if "stdout" in raw:
+            stdout = raw.get("stdout", "")
+            stderr = raw.get("stderr", "")
+            rc = raw.get("return_code", raw.get("returncode", 0))
+            success = raw.get("success", rc == 0)
+            return {"stdout": stdout, "stderr": stderr, "returncode": rc, "success": success}
+
+        # v1 format uses output/error
+        stdout = raw.get("output", "")
+        stderr = raw.get("error", "")
+        rc = raw.get("returncode", 0)
+        success = rc == 0
+        return {"stdout": stdout, "stderr": stderr, "returncode": rc, "success": success}
 
     # -- lifecycle ----------------------------------------------------------
 

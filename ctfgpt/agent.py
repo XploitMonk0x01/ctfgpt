@@ -297,11 +297,19 @@ def execute_node(state: AgentState) -> dict:
         # kali-server-mcp returns: stdout, stderr, return_code, success
         output = result_dict.get("stdout", "")
         err = result_dict.get("stderr", "")
-        if err and not output:
-            console.print(f"  [red]⚠  Remote error: {err}[/red]")
-            return {"tool_output": "", "error": f"Remote: {err}"}
+        rc = result_dict.get("returncode", 0)
 
-        result = output if output else err
+        # Combine stdout + stderr so tools that write to stderr (e.g. nmap status)
+        # are not silently dropped
+        if err and output:
+            result = output + "\n[stderr]\n" + err
+        elif err:
+            console.print(f"  [red]⚠  Remote error: {err}[/red]")
+            if rc != 0:
+                return {"tool_output": "", "error": f"Remote: {err}"}
+            result = err
+        else:
+            result = output
 
         # Extract tool name for display
         tool_name = command.split()[0] if command.split() else "unknown"
@@ -363,7 +371,11 @@ def observe_node(state: AgentState) -> dict:
     from ctfgpt.config import get_llm
     from ctfgpt.blackboard import Blackboard
 
-    bb = Blackboard(state["session_id"])
+    bb = Blackboard(
+        session_id=state["session_id"],
+        category=state.get("category", ""),
+        challenge_desc=state.get("query", ""),
+    )
     iteration = state["iteration"] + 1
 
     tool_name = state["command"].split()[0] if state["command"] else "unknown"
@@ -390,11 +402,23 @@ def observe_node(state: AgentState) -> dict:
             "blackboard_summary": bb.summary(),
         }
 
-    # Ask LLM to analyse the output
+    # Smart truncation: keep first 3000 + last 1000 chars to preserve both
+    # the tool header/config output AND the final summary lines (where flags often appear)
+    MAX_HEAD = 3000
+    MAX_TAIL = 1000
+    if len(tool_output) > MAX_HEAD + MAX_TAIL:
+        truncated = (
+            tool_output[:MAX_HEAD]
+            + f"\n\n[...{len(tool_output) - MAX_HEAD - MAX_TAIL} chars truncated...]\n\n"
+            + tool_output[-MAX_TAIL:]
+        )
+    else:
+        truncated = tool_output
+
     prompt_text = _OBSERVE_PROMPT.format(
         category=state["category"],
         command=state["command"],
-        tool_output=tool_output[:2000],  # truncate very long outputs
+        tool_output=truncated,
     )
 
     try:
@@ -409,11 +433,13 @@ def observe_node(state: AgentState) -> dict:
         console.print(f"  [red]Observation LLM call failed: {exc}[/red]")
         analysis = f"Analysis unavailable ({exc})"
 
-    # Parse rating from analysis
+    # Parse rating from analysis — use structured regex to avoid false positives
+    # e.g. "high port range" should NOT trigger HIGH weight
+    import re as _re
     rating_weight = 0.5  # MEDIUM default
-    if "HIGH" in analysis.upper():
+    if _re.search(r'\bRate:\s*HIGH\b', analysis, _re.IGNORECASE):
         rating_weight = 0.9
-    elif "LOW" in analysis.upper():
+    elif _re.search(r'\bRate:\s*LOW\b', analysis, _re.IGNORECASE):
         rating_weight = 0.2
 
     console.print(f"  [dim]Finding relevance:[/dim] [bold]{'HIGH' if rating_weight > 0.8 else 'MEDIUM' if rating_weight > 0.4 else 'LOW'}[/bold]")
@@ -422,11 +448,11 @@ def observe_node(state: AgentState) -> dict:
     bb.write_finding(tool_name, state["command"], analysis, weight=rating_weight)
 
     # Decide whether to continue or respond
-    if rating_weight > 0.8:
-        # HIGH relevance finding — we likely have the answer
+    if rating_weight > 0.8 and iteration >= 2:
+        # HIGH relevance finding AND we've done at least 2 iterations
         next_action = "respond"
         console.print("  [green]High-value evidence found — preparing response.[/green]")
-    elif bb.has_sufficient_evidence(threshold=0.7) and iteration >= 2:
+    elif bb.has_sufficient_evidence(threshold=0.85) and iteration >= 3:
         next_action = "respond"
         console.print("  [green]Sufficient evidence gathered — preparing response.[/green]")
     elif iteration >= state["max_iterations"]:

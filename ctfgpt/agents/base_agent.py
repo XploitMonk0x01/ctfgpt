@@ -32,8 +32,8 @@ class BaseAgent:
         """Check if the agent's proposed command uses a whitelisted tool."""
         # Simple extraction of the primary binary name
         binary = command.strip().split()[0].lower()
-        # Allow core utils basically everywhere for file manipulation
-        if binary in ["cat", "ls", "grep", "echo", "pwd", "cd", "cp", "mv", "rm", "mkdir", "chmod", "curl", "wget"]:
+        # Allow safe read-only core utils (NO write/delete/permission tools)
+        if binary in ["cat", "ls", "grep", "echo", "pwd", "curl", "wget"]:
             return True
         # Check against agent's specific whitelist
         return any(binary.startswith(t.lower()) for t in self.allowed_tools)
@@ -75,7 +75,7 @@ class BaseAgent:
                 result = self.execute_command(command)
                 output = result.get("stdout", "") or result.get("stderr", "") or "(no output)"
                 
-                console.print(f"  [dim]{output[:200]}...[/dim]")
+                console.print(f"  [dim]{output[:200]}{'...' if len(output) > 200 else ''}[/dim]")
                 
                 # Write finding to blackboard
                 success = result.get("success", False)
@@ -84,7 +84,7 @@ class BaseAgent:
                     agent=self.name,
                     tool=command.split()[0],
                     command=command,
-                    output=output,
+                    result=output,
                     weight=weight
                 )
                 

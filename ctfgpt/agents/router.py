@@ -71,12 +71,12 @@ SUMMARY: <final summary>
             except Exception as exc:
                 return f"Router failed: {exc}"
                 
-            if "DONE" in content:
+            if re.search(r'(?m)^DONE\b', content):
                 console.print("\n[bold green]🏁 Router decided the challenge is complete![/bold green]")
                 return content
                 
             agent_match = re.search(r"AGENT:\s*(recon|exploit|privesc)", content, re.IGNORECASE)
-            task_match = re.search(r"TASK:\s*(.+)", content, re.IGNORECASE)
+            task_match = re.search(r"TASK:\s*(.+?)(?:\nAGENT:|$)", content, re.IGNORECASE | re.DOTALL)
             
             if not agent_match or not task_match:
                 console.print("[red]❌ Router failed to pick an agent.[/red]")
@@ -88,6 +88,10 @@ SUMMARY: <final summary>
             console.print(f"\n[bold blue]🔄 Router delegating to {agent_name.upper()}[/bold blue]")
             console.print(f"[dim]Task: {task}[/dim]\n")
             
+            if agent_name not in self.agents:
+                console.print(f"[red]❌ Router chose unknown agent '{agent_name}'. Valid: {list(self.agents.keys())}. Skipping.[/red]")
+                continue
+
             # 2. Run the chosen agent
             agent = self.agents[agent_name]
             agent_result = agent.run(task)

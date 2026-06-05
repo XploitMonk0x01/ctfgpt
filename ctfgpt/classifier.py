@@ -7,7 +7,11 @@ then falls back to keyword-signal scoring across the six CTF categories.
 import re
 from typing import Optional
 
+from rich.console import Console
+
 from ctfgpt.config import CATEGORIES
+
+console = Console()
 
 # Keyword signals for each category — multi-word entries are matched as phrases
 CATEGORY_SIGNALS: dict[str, list[str]] = {
@@ -23,7 +27,7 @@ CATEGORY_SIGNALS: dict[str, list[str]] = {
     ],
     "crypto": [
         "cipher", "rsa", "aes", "base64", "xor", "hash", "md5",
-        "sha", "encoding", "otp", "padding oracle", "frequency",
+        "sha1", "sha256", "sha512", "encoding", "otp", "padding oracle", "frequency",
         "modular", "prime", "encrypt", "decrypt",
     ],
     "pwn": [
@@ -38,8 +42,8 @@ CATEGORY_SIGNALS: dict[str, list[str]] = {
     ],
     "osint": [
         "username", "email", "social media", "geolocation",
-        "metadata", "whois", "dns", "google dork", "wayback",
-        "sherlock", "recon",
+        "whois", "dns", "google dork", "wayback",
+        "sherlock", "recon", "linkedin", "instagram", "maltego",
     ],
 }
 
@@ -118,8 +122,12 @@ def classify(query: str, override: Optional[str] = None) -> str:
     if best_score >= _CONFIDENCE_THRESHOLD:
         return best_category
 
-    # Not enough signal — fall back to default
-    return _DEFAULT_CATEGORY
+    # Not enough signal — return the best-scoring category anyway (never blindly default)
+    # This avoids the wrong playbook running when there is some (weak) signal
+    console.print(
+        f"  [dim]Classifier: low confidence ({best_score:.2f}) — using best guess '{best_category}'[/dim]"
+    )
+    return best_category
 
 
 def get_confidence(query: str) -> tuple[str, float]:

@@ -507,9 +507,8 @@ def _replan(
 
     raw_upper = raw.upper()
 
-    # Parse decision
-    if "DONE" in raw_upper:
-        return {"action": "DONE"}
+    # Parse decision — check INSERT first (most specific), then REPLAN, then DONE
+    # Checking DONE last prevents false triggers when rationale contains the word "DONE"
 
     # Check for INSERT
     insert_match = re.search(
@@ -537,5 +536,9 @@ def _replan(
         if new_steps:
             return {"action": "REPLAN", "steps": new_steps}
         return {"action": "CONTINUE"}  # couldn't parse, just continue
+
+    # Check for DONE (last, to avoid false positives in INSERT rationale)
+    if re.search(r'(?m)^DONE\b', raw):
+        return {"action": "DONE"}
 
     return {"action": "CONTINUE"}
