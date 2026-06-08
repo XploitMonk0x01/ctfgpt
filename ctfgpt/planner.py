@@ -55,71 +55,96 @@ class PlanStep:
 # ---------------------------------------------------------------------------
 
 _PLAN_GENERATION_PROMPT = """\
-You are an expert CTF attack planner. Given a challenge description, category,
-and target information, generate a concrete numbered attack plan.
+You are an expert CTF penetration tester generating a concrete attack plan.
+Think like a human hacker: start broad (what's open?), then enumerate,
+then exploit, then escalate. Every command must be concrete and immediately
+executable — no pseudo-code, no placeholders.
 
-Challenge: {challenge_desc}
-Category: {category}
 Target: {target}
+Category: {category}
+Challenge context: {challenge_desc}
 {file_context}
 {evidence_context}
 
-RULES:
-1. Generate exactly {max_steps} steps, ordered by dependency (recon first, exploit last)
-2. Each step MUST be a concrete shell command — no placeholders except the literal target
-3. Use the actual target "{target}" in commands, not {{target}} or <target>
-4. For web: always start with nmap, then include technology-specific tools
-5. If evidence suggests WordPress, include wpscan
-6. If evidence suggests a redirect to a hostname, include an /etc/hosts update step
-7. Each step must have a clear rationale
+METHODOLOGY (follow this order):
+1. RECON   — nmap full-service scan to discover every open port and service
+2. RECON   — grab HTTP headers / page title; follow any redirect
+3. ENUM    — based on WHAT IS OPEN: gobuster/ffuf for web dirs, wpscan for WordPress,
+             enum4linux for SMB, finger/rustscan for misc services
+4. EXPLOIT — run targeted exploits for discovered vulnerabilities (searchsploit, sqlmap,
+             wpscan --enumerate vp/u, hydra for SSH/FTP with weak creds)
+5. PRIVESC — once inside: linpeas, sudo -l, find SUID, cron jobs, writable paths
 
-OUTPUT FORMAT (strict — one step per line):
+PORTS HINT (if already known from evidence):
+{ports_hint}
+
+RULES:
+1. Generate exactly {max_steps} steps ordered by the methodology above
+2. Each step MUST be a CONCRETE shell command using the actual target "{target}"
+3. Do NOT use {{target}}, <target>, or any placeholder — only the literal string
+4. Do NOT include /etc/hosts manipulation — that is handled automatically
+5. Do NOT repeat any already-completed step from evidence
+6. If category is 'web': always start nmap, then curl -sI, then gobuster/ffuf, then wpscan if WordPress detected
+7. If category is 'pwn': nmap → file, strings, checksec, gdb/pwndbg
+8. If category is 'crypto': cat / identify cipher → decode → crack
+9. Include WPScan with API token placeholder only if WordPress evidence exists
+10. Each step must have a clear one-line rationale
+
+OUTPUT FORMAT (strict — one step per line, no extra text):
 STEP 1: <shell command> | RATIONALE: <one sentence why>
 STEP 2: <shell command> | RATIONALE: <one sentence why>
 ...
 
-EXAMPLE:
-STEP 1: nmap -sCV -T4 10.10.11.230 | RATIONALE: Discover open ports and services
-STEP 2: curl -sI http://10.10.11.230 | RATIONALE: Check HTTP headers and tech stack
+EXAMPLE for a web target with SSH and HTTP open:
+STEP 1: nmap -sCV -T4 10.10.11.230 | RATIONALE: Discover all open ports and service versions
+STEP 2: curl -sIL http://10.10.11.230 | RATIONALE: Follow redirects and fingerprint HTTP tech stack
+STEP 3: gobuster dir -u http://10.10.11.230 -w /usr/share/seclists/Discovery/Web-Content/common.txt -x php,html,txt | RATIONALE: Brute-force common web directories
+STEP 4: wpscan --url http://10.10.11.230 --enumerate u,vp --plugins-detection aggressive | RATIONALE: Enumerate WordPress users and vulnerable plugins
 """
 
 _REPLAN_PROMPT = """\
-You are a CTF attack planner adapting your plan based on new evidence.
+You are a CTF penetration tester adapting your attack plan based on new evidence.
+Think like a human hacker — read the tool output carefully and decide the smartest next move.
 
 Category: {category}
-Target: {target}
+Target: {target} (use this hostname/IP in ALL commands)
 Challenge: {challenge_desc}
 
 Just completed Step {step_num}: {command}
-Output:
+Output (read carefully for open ports, services, hostnames, flags, errors):
 {output}
 
-Remaining plan:
+Remaining planned steps:
 {remaining_plan}
+
+Already executed commands (DO NOT repeat these):
+{completed_commands}
 
 Evidence so far:
 {evidence}
 
-Based on the tool output, decide ONE of:
-1. CONTINUE — the current plan is still good, proceed to the next step
-2. INSERT: <shell command> | RATIONALE: <why> — add an urgent new step next
-3. REPLAN — generate a completely new remaining plan (same format as original)
-4. DONE — we have enough evidence to generate a final summary
+Based on the output, decide EXACTLY ONE of:
+1. CONTINUE — the current plan is still correct, proceed to next step as-is
+2. INSERT: <shell command> | RATIONALE: <why this is urgent next> — add one step immediately next
+3. REPLAN — rewrite the remaining plan from scratch (same STEP N: cmd | RATIONALE: why format)
+4. DONE — enough evidence to generate a final summary (flag found, or all angles exhausted)
 
-IMPORTANT OBSERVATIONS:
-- If the output shows a redirect to a hostname (e.g. "Location: http://connected.htb/"),
-  INSERT a step: echo "<IP> <hostname>" >> /etc/hosts | RATIONALE: Map hostname for tools
-- If nmap shows a specific service, adapt remaining steps to target that service
-- If a flag pattern is found (flag{{...}}, HTB{{...}}, THM{{...}}), respond DONE
-- If a step failed, suggest an alternative approach
-
-REDIRECT RETARGETING RULE (critical):
-If the completed step added an /etc/hosts mapping (e.g.
-  echo "10.129.114.207 connected.htb" >> /etc/hosts
-), then ALL subsequent commands MUST use the **hostname** ("{target}") instead of
-the bare IP address. Every gobuster, curl, nikto, wpscan, etc. command in the
-remaining plan should already reference the hostname. If the remaining plan still
-contains the old IP, emit REPLAN and rewrite every command to use the hostname.
+SMART DECISION RULES:
+- If nmap output shows open ports → always REPLAN with port-specific commands:
+  * 22/tcp → add ssh bruteforce or banner grab if creds aren't known
+  * 80/tcp or 443/tcp → gobuster, nikto, curl title, wpscan if WordPress detected
+  * 21/tcp → ftp anonymous login check
+  * 445/tcp → enum4linux, smbclient -L
+  * 3306/tcp → mysql connection check
+  * Include the hostname (not IP) in all web commands if redirect already detected
+- If curl shows "301 Moved Permanently" to a hostname → INSERT /etc/hosts mapping ONLY if
+  that hostname is NOT already in the completed commands list
+- If /etc/hosts was already mapped → NEVER insert another mapping, go straight to CONTINUE or REPLAN
+- After /etc/hosts mapping → REPLAN remaining web steps to use the hostname instead of IP
+- If WordPress is detected (wp-login, wp-content, X-Pingback) → REPLAN to insert wpscan --enumerate u,vp
+- If a flag pattern is found (flag{{...}}, HTB{{...}}, THM{{...}}) → respond DONE
+- If a step failed → INSERT an alternative command or REPLAN around the failure
+- NEVER emit INSERT for /etc/hosts if it already appears in completed commands
 
 Respond with EXACTLY one decision.
 """
@@ -165,6 +190,21 @@ def _extract_hosts_redirect(command: str) -> tuple[str, str] | None:
         return m.group(1), m.group(2)
 
     return None
+
+
+def _idempotent_hosts_cmd(ip: str, hostname: str) -> str:
+    """Return a one-liner that adds IP→hostname to /etc/hosts ONLY if not already present.
+
+    Uses 'grep -qF' to check before appending, so it is safe to run multiple times.
+    """
+    import shlex
+    ip_q = shlex.quote(ip)
+    host_q = shlex.quote(hostname)
+    entry_q = shlex.quote(f"{ip} {hostname}")
+    return (
+        f"grep -qF {entry_q} /etc/hosts || "
+        f"echo {entry_q} | sudo tee -a /etc/hosts"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -341,6 +381,7 @@ def run_planner(
 
     file_context = f"Challenge file: {file_path}" if file_path else "No challenge file provided."
     evidence_context = f"Existing evidence:\n{bb.summary()}" if bb.findings else "No prior evidence."
+    ports_hint = _extract_open_ports_from_evidence(bb) or "(not yet scanned — run nmap first)"
 
     plan_prompt = _PLAN_GENERATION_PROMPT.format(
         challenge_desc=challenge_desc[:500],
@@ -348,6 +389,7 @@ def run_planner(
         target=clean_target,
         file_context=file_context,
         evidence_context=evidence_context,
+        ports_hint=ports_hint,
         max_steps=max_steps,
     )
 
@@ -390,6 +432,8 @@ def run_planner(
     # --- Execute plan adaptively --------------------------------------------
     current_idx = 0
     original_target = clean_target          # keep for retargeting logic
+    hosts_mapped: set[str] = set()         # IPs that have already been mapped to /etc/hosts
+    completed_commands: list[str] = []     # track all executed commands for /etc/hosts dedup
     # Cache observer LLM once — avoids re-instantiation on every step
     observer_llm = get_llm(role="observer")
 
@@ -440,12 +484,14 @@ def run_planner(
 
             weight = 0.8 if stdout.strip() else 0.3
             bb.write_finding(step.command.split()[0], step.command, output, weight=weight)
+            completed_commands.append(step.command)
 
             # --- /etc/hosts redirect → retarget remaining steps --------------
             redirect = _extract_hosts_redirect(step.command)
             if redirect:
                 old_ip, new_hostname = redirect
-                if old_ip == original_target and new_hostname != clean_target:
+                hosts_mapped.add(old_ip)   # mark as already done
+                if new_hostname != clean_target:
                     console.print()
                     console.print(
                         f"  [bold cyan]🔀 Redirect detected:[/bold cyan] "
@@ -467,19 +513,78 @@ def run_planner(
             step.status = "failed"
             _render_step_output(step, f"Error: {msg}", False)
             bb.write_finding(step.command.split()[0], step.command, f"ERROR: {msg}", weight=0.1)
+            completed_commands.append(step.command)
 
         # --- Re-plan after each step ----------------------------------------
-        executed_step = True  # we actually ran a command
-        if current_idx < len(steps) - 1:
+        if current_idx < len(steps) - 1 and step.status in ("done", "failed"):
+
+            # === Nmap-driven smart REPLAN ===
+            # After any nmap step, extract actual open ports and replan
+            is_nmap_step = step.command.strip().startswith("nmap")
+            if is_nmap_step and step.status == "done" and step.output:
+                open_ports = _extract_open_ports(step.output)
+                if open_ports:
+                    console.print()
+                    console.print(
+                        f"  [bold cyan]🔍 Nmap complete: found open ports:[/bold cyan] "
+                        + ", ".join(open_ports)
+                    )
+                    # Force a REPLAN with port-aware context injected
+                    port_context = _build_port_context(open_ports, clean_target)
+                    nmap_replan = _replan(
+                        llm=observer_llm,
+                        category=category,
+                        target=clean_target,
+                        challenge_desc=challenge_desc,
+                        step=step,
+                        remaining_steps=steps[current_idx + 1:],
+                        evidence=bb.summary(),
+                        completed_commands=completed_commands,
+                        force_context=port_context,
+                    )
+                    if nmap_replan["action"] in ("REPLAN", "INSERT"):
+                        if nmap_replan["action"] == "REPLAN" and nmap_replan.get("steps"):
+                            new_steps = nmap_replan["steps"]
+                            console.print(f"  [bold yellow]🔄 Port-aware replan: {len(new_steps)} steps[/bold yellow]")
+                            steps = steps[:current_idx + 1] + new_steps
+                            for i, s in enumerate(steps):
+                                s.step_num = i + 1
+                            _display_plan(steps, title="Port-Aware Attack Plan")
+                        # If INSERT, fall through to normal replan below
+                        current_idx += 1
+                        if step.status in ("done", "failed"):
+                            time.sleep(0.3)
+                        continue
+
+            # === /etc/hosts dedup guard ===
+            # If LLM wants to INSERT another /etc/hosts for an already-mapped IP, block it
             replan_decision = _replan(
-                llm=observer_llm,  # reuse cached instance
+                llm=observer_llm,
                 category=category,
-                target=clean_target,   # already updated if redirect was detected
+                target=clean_target,
                 challenge_desc=challenge_desc,
                 step=step,
                 remaining_steps=steps[current_idx + 1:],
                 evidence=bb.summary(),
+                completed_commands=completed_commands,
             )
+
+            # Guard: if LLM tries to INSERT another /etc/hosts for already-mapped IP → skip
+            # Also: rewrite any /etc/hosts insert to use the idempotent grep-check form
+            if replan_decision["action"] == "INSERT":
+                proposed_cmd = replan_decision.get("step", {})
+                if hasattr(proposed_cmd, "command"):
+                    redirect_info = _extract_hosts_redirect(proposed_cmd.command)
+                    if redirect_info:
+                        ip, hostname = redirect_info
+                        if ip in hosts_mapped:
+                            console.print(
+                                f"  [dim]🛡 /etc/hosts for {ip} already mapped — skipping duplicate INSERT.[/dim]"
+                            )
+                            replan_decision = {"action": "CONTINUE"}
+                        else:
+                            # Rewrite to be idempotent: grep before append
+                            proposed_cmd.command = f"grep -q '{hostname}' /etc/hosts || echo '{ip} {hostname}' | sudo tee -a /etc/hosts"
 
             if replan_decision["action"] == "DONE":
                 console.print("  [bold green]🎯 Planner decided: enough evidence collected![/bold green]")
@@ -491,19 +596,15 @@ def run_planner(
                 new_step = replan_decision["step"]
                 console.print(f"  [bold yellow]📌 Planner inserting new step:[/bold yellow] {new_step.command}")
                 console.print(f"     [dim]Rationale: {new_step.rationale}[/dim]")
-                # Insert after current step
                 steps.insert(current_idx + 1, new_step)
-                # Renumber
                 for i, s in enumerate(steps):
                     s.step_num = i + 1
 
             elif replan_decision["action"] == "REPLAN":
-                new_steps = replan_decision["steps"]
+                new_steps = replan_decision.get("steps", [])
                 if new_steps:
                     console.print(f"  [bold yellow]🔄 Planner revised remaining plan ({len(new_steps)} steps)[/bold yellow]")
-                    # Replace remaining steps
                     steps = steps[:current_idx + 1] + new_steps
-                    # Renumber
                     for i, s in enumerate(steps):
                         s.step_num = i + 1
                     _display_plan(steps, title="Revised Attack Plan")
@@ -547,6 +648,61 @@ def run_planner(
     return hint, session_id
 
 
+# ---------------------------------------------------------------------------
+# Port-Aware Helpers
+# ---------------------------------------------------------------------------
+
+def _extract_open_ports(nmap_output: str) -> list[str]:
+    """Parse nmap output and return a list of open port description strings.
+
+    Example return: ['22/tcp open ssh OpenSSH 7.4', '80/tcp open http Apache 2.4.6']
+    """
+    ports: list[str] = []
+    for line in nmap_output.splitlines():
+        # Match lines like: 22/tcp   open  ssh      OpenSSH 7.4
+        m = re.match(r"^(\d+/tcp)\s+open\s+(\S+)(?:\s+(.+))?", line.strip())
+        if m:
+            port_proto = m.group(1)
+            service = m.group(2)
+            version = (m.group(3) or "").strip()
+            ports.append(f"{port_proto} {service} {version}".strip())
+    return ports
+
+
+def _build_port_context(open_ports: list[str], target: str) -> str:
+    """Build a human-readable port context block to inject into the replan prompt."""
+    lines = [
+        "=== NMAP SCAN COMPLETE ===",
+        f"Target: {target}",
+        "Open ports discovered:",
+    ]
+    for p in open_ports:
+        lines.append(f"  {p}")
+    lines.append("")
+    lines.append("INSTRUCTION: REPLAN the remaining steps based on the above open ports.")
+    lines.append("Use the TARGET hostname (not IP) in all web tool commands.")
+    lines.append("Port-specific guidance:")
+    lines.append("  22/tcp (SSH)  -> hydra SSH brute if creds unknown, or ssh-audit")
+    lines.append("  80/tcp (HTTP) -> gobuster/ffuf dir scan, nikto, curl -sIL, wpscan if WordPress")
+    lines.append("  443/tcp (HTTPS) -> same as HTTP but with https:// and -k flag")
+    lines.append("  21/tcp (FTP)  -> ftp <target> with anonymous:anonymous")
+    lines.append("  445/tcp (SMB) -> enum4linux -a, smbclient -L")
+    lines.append("  3306/tcp (MySQL) -> mysql -h <target> -u root")
+    return "\n".join(lines)
+
+
+def _extract_open_ports_from_evidence(bb) -> str:
+    """Search the blackboard for any previous nmap finding and return port summary."""
+    for finding in reversed(getattr(bb, "findings", [])):
+        tool = str(finding.get("tool", "")).lower()
+        result = str(finding.get("result", ""))
+        if tool == "nmap" and "open" in result:
+            ports = _extract_open_ports(result)
+            if ports:
+                return "Known open ports: " + "; ".join(ports[:10])
+    return ""
+
+
 def _replan(
     llm,
     category: str,
@@ -555,6 +711,8 @@ def _replan(
     step: PlanStep,
     remaining_steps: list[PlanStep],
     evidence: str,
+    completed_commands: list[str] | None = None,
+    force_context: str = "",
 ) -> dict:
     """Ask the LLM to adapt the plan based on the latest tool output.
 
@@ -564,6 +722,12 @@ def _replan(
         f"STEP {s.step_num}: {s.command} | RATIONALE: {s.rationale}"
         for s in remaining_steps
     )
+    done_cmds = "\n".join(completed_commands or []) or "(none yet)"
+
+    # If port context is injected, prepend it to the output for maximum LLM visibility
+    enriched_output = step.output[:1500]
+    if force_context:
+        enriched_output = force_context + "\n\n" + enriched_output
 
     prompt = _REPLAN_PROMPT.format(
         category=category,
@@ -571,8 +735,9 @@ def _replan(
         challenge_desc=challenge_desc[:300],
         step_num=step.step_num,
         command=step.command,
-        output=step.output[:1500],
+        output=enriched_output,
         remaining_plan=remaining_plan or "(no remaining steps)",
+        completed_commands=done_cmds,
         evidence=evidence[:1000],
     )
 
