@@ -248,7 +248,11 @@ def ask(
     # --- Attempt retrieval ------------------------------------------------
     try:
         retriever = get_retriever(category)
-        docs: list[Document] = retriever.invoke(query)
+        # Search query combines the user's intent with actual tool evidence
+        search_query = query
+        if blackboard_summary:
+            search_query += "\n\nEvidence found:\n" + blackboard_summary
+        docs: list[Document] = retriever.invoke(search_query)
 
         if docs:
             rag_context = format_docs(docs)

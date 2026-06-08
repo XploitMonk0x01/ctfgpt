@@ -24,6 +24,7 @@ CATEGORY_SIGNALS: dict[str, list[str]] = {
         "sql injection", "xss", "lfi", "rfi", "php", "cookies",
         "burpsuite", "jwt", "ssrf", "directory traversal", "gobuster",
         "web server", "http", "html", "javascript", "api",
+        "config.php", "admin", "index.php", "curl", "robots.txt"
     ],
     "crypto": [
         "cipher", "rsa", "aes", "base64", "xor", "hash", "md5",

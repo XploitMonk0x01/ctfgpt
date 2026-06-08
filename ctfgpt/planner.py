@@ -137,6 +137,7 @@ SMART DECISION RULES:
   * 445/tcp → enum4linux, smbclient -L
   * 3306/tcp → mysql connection check
   * Include the hostname (not IP) in all web commands if redirect already detected
+- If gobuster/ffuf finds new routes (e.g. /admin, /config.php, Status: 200/301) → REPLAN to investigate those specific paths with curl or a targeted dir scan.
 - If curl shows "301 Moved Permanently" to a hostname → INSERT /etc/hosts mapping ONLY if
   that hostname is NOT already in the completed commands list
 - If /etc/hosts was already mapped → NEVER insert another mapping, go straight to CONTINUE or REPLAN
