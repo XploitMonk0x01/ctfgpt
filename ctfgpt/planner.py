@@ -107,14 +107,64 @@ Based on the tool output, decide ONE of:
 4. DONE — we have enough evidence to generate a final summary
 
 IMPORTANT OBSERVATIONS:
-- If the output shows a redirect to a hostname (e.g. "Location: http://www.smol.thm"),
-  INSERT a step to add it to /etc/hosts and re-target remaining commands
+- If the output shows a redirect to a hostname (e.g. "Location: http://connected.htb/"),
+  INSERT a step: echo "<IP> <hostname>" >> /etc/hosts | RATIONALE: Map hostname for tools
 - If nmap shows a specific service, adapt remaining steps to target that service
 - If a flag pattern is found (flag{{...}}, HTB{{...}}, THM{{...}}), respond DONE
 - If a step failed, suggest an alternative approach
 
+REDIRECT RETARGETING RULE (critical):
+If the completed step added an /etc/hosts mapping (e.g.
+  echo "10.129.114.207 connected.htb" >> /etc/hosts
+), then ALL subsequent commands MUST use the **hostname** ("{target}") instead of
+the bare IP address. Every gobuster, curl, nikto, wpscan, etc. command in the
+remaining plan should already reference the hostname. If the remaining plan still
+contains the old IP, emit REPLAN and rewrite every command to use the hostname.
+
 Respond with EXACTLY one decision.
 """
+
+
+# ---------------------------------------------------------------------------
+# Hosts Redirect Detection
+# ---------------------------------------------------------------------------
+
+def _extract_hosts_redirect(command: str) -> tuple[str, str] | None:
+    """If *command* adds an /etc/hosts entry, return (ip, hostname).
+
+    Handles common patterns produced by the LLM or _replan:
+      echo "10.10.11.1 box.htb" >> /etc/hosts
+      echo "10.10.11.1 box.htb" | sudo tee -a /etc/hosts
+      printf '%s\t%s\n' 10.10.11.1 box.htb | sudo tee -a /etc/hosts
+    """
+    # Match 'echo "IP HOSTNAME" >> /etc/hosts' style
+    m = re.search(
+        r'(?:echo|printf)\s+["\']?([\d.]+)\s+([a-zA-Z0-9._-]+\.(?:htb|thm|com|local|net|org|ctf))["\']?.*?/etc/hosts',
+        command,
+        re.IGNORECASE,
+    )
+    if m:
+        return m.group(1), m.group(2)
+
+    # Match 'printf '%s\t%s\n' IP HOSTNAME | tee …' style
+    m = re.search(
+        r"printf.*?'([\d.]+)'\s*'([a-zA-Z0-9._-]+\.(?:htb|thm|com|local|net|org|ctf))'",
+        command,
+        re.IGNORECASE,
+    )
+    if m:
+        return m.group(1), m.group(2)
+
+    # Match any command that writes IP HOSTNAME to /etc/hosts
+    m = re.search(
+        r'([\d.]+)\s+([a-zA-Z0-9._-]+\.(?:htb|thm|com|local|net|org|ctf)).*?/etc/hosts',
+        command,
+        re.IGNORECASE,
+    )
+    if m:
+        return m.group(1), m.group(2)
+
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -339,6 +389,9 @@ def run_planner(
 
     # --- Execute plan adaptively --------------------------------------------
     current_idx = 0
+    original_target = clean_target          # keep for retargeting logic
+    # Cache observer LLM once — avoids re-instantiation on every step
+    observer_llm = get_llm(role="observer")
 
     while current_idx < len(steps):
         step = steps[current_idx]
@@ -356,7 +409,10 @@ def run_planner(
 
         # User approval
         console.print("     [dim]Run? [Y/n/q (quit to summary)][/dim]", end=" ")
-        user_choice = input().strip().lower()
+        try:
+            user_choice = input().strip().lower()
+        except EOFError:
+            user_choice = ""  # non-interactive: auto-approve
         if user_choice in ['q', 'quit']:
             console.print("  [yellow]Plan aborted early. Jumping to summary...[/yellow]")
             step.status = "skipped"
@@ -385,6 +441,26 @@ def run_planner(
             weight = 0.8 if stdout.strip() else 0.3
             bb.write_finding(step.command.split()[0], step.command, output, weight=weight)
 
+            # --- /etc/hosts redirect → retarget remaining steps --------------
+            redirect = _extract_hosts_redirect(step.command)
+            if redirect:
+                old_ip, new_hostname = redirect
+                if old_ip == original_target and new_hostname != clean_target:
+                    console.print()
+                    console.print(
+                        f"  [bold cyan]🔀 Redirect detected:[/bold cyan] "
+                        f"[dim]{old_ip}[/dim] → [bold green]{new_hostname}[/bold green]"
+                    )
+                    console.print(
+                        f"  [dim]Retargeting all remaining steps from "
+                        f"{old_ip!r} to {new_hostname!r}…[/dim]"
+                    )
+                    clean_target = new_hostname
+                    # Rewrite future step commands in-place
+                    for future_step in steps[current_idx + 1:]:
+                        future_step.command = future_step.command.replace(old_ip, new_hostname)
+                    console.print()
+
         except Exception as exc:
             msg = str(exc)
             step.output = f"Error: {msg}"
@@ -393,11 +469,12 @@ def run_planner(
             bb.write_finding(step.command.split()[0], step.command, f"ERROR: {msg}", weight=0.1)
 
         # --- Re-plan after each step ----------------------------------------
+        executed_step = True  # we actually ran a command
         if current_idx < len(steps) - 1:
             replan_decision = _replan(
-                llm=get_llm(role="observer"),
+                llm=observer_llm,  # reuse cached instance
                 category=category,
-                target=clean_target,
+                target=clean_target,   # already updated if redirect was detected
                 challenge_desc=challenge_desc,
                 step=step,
                 remaining_steps=steps[current_idx + 1:],
@@ -434,7 +511,9 @@ def run_planner(
             # CONTINUE: do nothing special
 
         current_idx += 1
-        time.sleep(0.3)
+        # Only sleep when we actually ran a command (not when skipped)
+        if step.status in ("done", "failed"):
+            time.sleep(0.3)
 
     # --- Show final plan status ---------------------------------------------
     _display_plan(steps, title="Plan Execution Summary")

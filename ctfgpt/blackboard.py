@@ -71,6 +71,7 @@ class Blackboard:
 
         self._session_dir: Path = SESSIONS_DIR / session_id
         self._session_dir.mkdir(parents=True, exist_ok=True)
+        self._dirty: bool = False
 
         # Hydrate from disk if a previous state exists
         self._load()
@@ -97,6 +98,7 @@ class Blackboard:
             iteration=self.iteration,
         )
         self.findings.append(finding.to_dict())
+        self._dirty = True
         self.save()
 
     def boost(self, tool: str, factor: float = 1.2) -> None:
@@ -107,6 +109,7 @@ class Blackboard:
         for f in reversed(self.findings):
             if f["tool"] == tool:
                 f["weight"] = min(f["weight"] * factor, 1.0)
+                self._dirty = True
                 self.save()
                 return
 
@@ -122,6 +125,7 @@ class Blackboard:
                 if f["weight"] < 0.1:
                     real_idx = len(self.findings) - 1 - i
                     self.dead_ends.append(self.findings.pop(real_idx))
+                self._dirty = True
                 self.save()
                 return
 
@@ -130,6 +134,7 @@ class Blackboard:
     def add_unexplored(self, hint: str) -> None:
         """Queue a hint for future exploration."""
         self.unexplored.append(hint)
+        self._dirty = True
         self.save()
 
     def pop_unexplored(self) -> Optional[str]:
@@ -137,6 +142,7 @@ class Blackboard:
         if not self.unexplored:
             return None
         hint = self.unexplored.pop(0)
+        self._dirty = True
         self.save()
         return hint
 
@@ -199,17 +205,24 @@ class Blackboard:
         bb.iteration = data.get("iteration", 0)
         bb._session_dir = SESSIONS_DIR / session_id
         bb._session_dir.mkdir(parents=True, exist_ok=True)
+        bb._dirty = False
         return bb
 
     # -- persistence --------------------------------------------------------
 
     def save(self) -> None:
-        """Persist current state to ``blackboard.json``."""
+        """Persist current state to ``blackboard.json`` and clear dirty flag."""
         path = self._session_dir / self._FILENAME
         path.write_text(
             json.dumps(self.to_dict(), indent=2, ensure_ascii=False),
             encoding="utf-8",
         )
+        self._dirty = False
+
+    def flush(self) -> None:
+        """Persist only if there are unsaved changes (dirty flag is set)."""
+        if self._dirty:
+            self.save()
 
     def _load(self) -> None:
         """Load state from ``blackboard.json`` if it exists on disk."""

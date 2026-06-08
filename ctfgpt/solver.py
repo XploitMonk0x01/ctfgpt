@@ -283,115 +283,121 @@ def run_solver(
         console.print(f"[red]❌ MCP client unavailable: {exc}[/red]")
         return f"Solve failed: MCP unavailable — {exc}", session_id
 
-    # --- Execute playbook ----------------------------------------------------
-    last_phase = ""
-    step_count = 0
+    try:
+        # --- Execute playbook ------------------------------------------------
+        last_phase = ""
+        step_count = 0
 
-    for step in steps:
-        step_count += 1
-        cmd = _render_command(
-            step.command_template,
-            clean_target,
-            file_path,
-            active_url,
-            connect_target=original_clean_target,
-            virtual_host=virtual_host,
-        )
+        for step in steps:
+            step_count += 1
+            cmd = _render_command(
+                step.command_template,
+                clean_target,
+                file_path,
+                active_url,
+                connect_target=original_clean_target,
+                virtual_host=virtual_host,
+            )
 
-        # Phase header
-        if step.phase != last_phase:
-            _render_phase_header(step.phase, category)
-            last_phase = step.phase
+            # Phase header
+            if step.phase != last_phase:
+                _render_phase_header(step.phase, category)
+                last_phase = step.phase
 
-        console.print(f"\n  [bold]{step_count}. {step.name}[/bold]  [dim]— {step.description}[/dim]")
-        console.print(f"  [dim]$ {cmd}[/dim]")
+            console.print(f"\n  [bold]{step_count}. {step.name}[/bold]  [dim]— {step.description}[/dim]")
+            console.print(f"  [dim]$ {cmd}[/dim]")
 
-        # User approval
-        import typer
-        console.print("     [dim]Run? [Y/n/q (quit to summary)][/dim]", end=" ")
-        choice = input().strip().lower()
-        if choice in ['q', 'quit']:
-            console.print("  [yellow]Playbook aborted early. Jumping to summary...[/yellow]")
-            break
-        elif choice in ['n', 'no']:
-            console.print("  [yellow]Skipped.[/yellow]")
-            continue
+            # User approval
+            console.print("     [dim]Run? [Y/n/q (quit to summary)][/dim]", end=" ")
+            try:
+                choice = input().strip().lower()
+            except EOFError:
+                choice = ""  # non-interactive: auto-approve
+            if choice in ['q', 'quit']:
+                console.print("  [yellow]Playbook aborted early. Jumping to summary...[/yellow]")
+                break
+            elif choice in ['n', 'no']:
+                console.print("  [yellow]Skipped.[/yellow]")
+                continue
 
-        # Execute
-        try:
-            result = mcp.execute(cmd, timeout=step.timeout)
-            stdout = result.get("stdout", "")
-            stderr = result.get("stderr", "")
-            success = result.get("success", True)
+            # Execute
+            try:
+                result = mcp.execute(cmd, timeout=step.timeout)
+                stdout = result.get("stdout", "")
+                stderr = result.get("stderr", "")
+                success = result.get("success", True)
 
-            output = stdout or stderr or "(no output)"
-            _render_step_output(step, output, success)
+                output = stdout or stderr or "(no output)"
+                _render_step_output(step, output, success)
 
-            weight = 0.8 if stdout.strip() else 0.3
-            bb.write_finding(step.name, cmd, output, weight=weight)
+                weight = 0.8 if stdout.strip() else 0.3
+                bb.write_finding(step.name, cmd, output, weight=weight)
 
-            if category == "web":
-                updated_url = _adapt_web_target_from_output(
-                    current_url=active_url,
-                    original_target=original_clean_target,
-                    output=output,
-                    blackboard=bb,
-                )
-                if updated_url != active_url:
-                    active_url = updated_url
-                    clean_target = _url_to_target(active_url)
-                    if _looks_like_ipv4(original_clean_target) and not _looks_like_ipv4(clean_target):
-                        virtual_host = clean_target
-                    console.print(
-                        f"  [cyan]↪ Following discovered web target:[/cyan] "
-                        f"[bold]{active_url}[/bold]"
-                    )
-                    if virtual_host:
-                        console.print(
-                            f"  [cyan]↪ Using direct IP connection with Host header:[/cyan] "
-                            f"[bold]{original_clean_target}[/bold] → [bold]{virtual_host}[/bold]"
-                        )
-                    _offer_hosts_mapping(
-                        mcp=mcp,
-                        hostname=clean_target,
-                        ip_address=original_clean_target,
-                        challenge_desc=challenge_desc,
+                if category == "web":
+                    updated_url = _adapt_web_target_from_output(
+                        current_url=active_url,
+                        original_target=original_clean_target,
+                        output=output,
                         blackboard=bb,
                     )
+                    if updated_url != active_url:
+                        active_url = updated_url
+                        clean_target = _url_to_target(active_url)
+                        if _looks_like_ipv4(original_clean_target) and not _looks_like_ipv4(clean_target):
+                            virtual_host = clean_target
+                        console.print(
+                            f"  [cyan]↪ Following discovered web target:[/cyan] "
+                            f"[bold]{active_url}[/bold]"
+                        )
+                        if virtual_host:
+                            console.print(
+                                f"  [cyan]↪ Using direct IP connection with Host header:[/cyan] "
+                                f"[bold]{original_clean_target}[/bold] → [bold]{virtual_host}[/bold]"
+                            )
+                        _offer_hosts_mapping(
+                            mcp=mcp,
+                            hostname=clean_target,
+                            ip_address=original_clean_target,
+                            challenge_desc=challenge_desc,
+                            blackboard=bb,
+                        )
 
+            except Exception as exc:
+                msg = str(exc)
+                _render_step_output(step, f"Error: {msg}", False)
+                if step.required:
+                    bb.write_finding(step.name, cmd, f"ERROR: {msg}", weight=0.1)
+
+            time.sleep(0.3)  # small breathing room between steps
+
+        # --- Generate grounded summary ----------------------------------------
+        console.print()
+        console.print(Rule("[bold green]Generating Solution Summary[/bold green]"))
+        console.print("  [dim]Combining evidence with RAG writeup context…[/dim]\n")
+
+        evidence_text = _summarize_evidence_for_rag(bb)
+        query = (
+            f"Solve this {category} CTF challenge.\n"
+            f"Target: {clean_target}\n"
+            f"Description: {challenge_desc[:500]}\n\n"
+            f"Evidence collected:\n{evidence_text}"
+        )
+
+        try:
+            hint, _sources = rag_ask(
+                query=query,
+                category=category,
+                level=3,
+                blackboard_summary=evidence_text,
+            )
         except Exception as exc:
-            msg = str(exc)
-            _render_step_output(step, f"Error: {msg}", False)
-            if step.required:
-                bb.write_finding(step.name, cmd, f"ERROR: {msg}", weight=0.1)
+            hint = (
+                f"Evidence collected but RAG summary failed ({exc}).\n\n"
+                f"Raw findings:\n{evidence_text}"
+            )
 
-        time.sleep(0.3)  # small breathing room between steps
-
-    # --- Generate grounded summary ------------------------------------------
-    console.print()
-    console.print(Rule("[bold green]Generating Solution Summary[/bold green]"))
-    console.print("  [dim]Combining evidence with RAG writeup context…[/dim]\n")
-
-    evidence_text = _summarize_evidence_for_rag(bb)
-    query = (
-        f"Solve this {category} CTF challenge.\n"
-        f"Target: {clean_target}\n"
-        f"Description: {challenge_desc[:500]}\n\n"
-        f"Evidence collected:\n{evidence_text}"
-    )
-
-    try:
-        hint, _sources = rag_ask(
-            query=query,
-            category=category,
-            level=3,
-            blackboard_summary=evidence_text,
-        )
-    except Exception as exc:
-        hint = (
-            f"Evidence collected but RAG summary failed ({exc}).\n\n"
-            f"Raw findings:\n{evidence_text}"
-        )
+    finally:
+        mcp.close()  # Always release the httpx connection pool
 
     return hint, session_id
 
@@ -413,9 +419,10 @@ def _render_command(
     wpscan_headers = f"--headers {shlex.quote(f'Host: {virtual_host}')}" if virtual_host else ""
 
     if "{target}" in cmd:
-        cmd = cmd.replace("{target}", target)
+        cmd = cmd.replace("{target}", shlex.quote(target) if " " in target or "'" in target or "$" in target else target)
     if "{file}" in cmd:
-        cmd = cmd.replace("{file}", file_path or "CHALLENGE_FILE")
+        quoted_file = shlex.quote(file_path) if file_path else "CHALLENGE_FILE"
+        cmd = cmd.replace("{file}", quoted_file)
     if "{url}" in cmd:
         cmd = cmd.replace("{url}", rendered_url)
     replacements = {
@@ -550,8 +557,14 @@ def _hosts_mapping_command(ip_address: str, hostnames: list[str]) -> str:
 
 
 def _looks_like_ipv4(value: str) -> bool:
-    """Return True when *value* is an IPv4 address-like string."""
-    return re.fullmatch(r"\d{1,3}(?:\.\d{1,3}){3}", value) is not None
+    """Return True when *value* is a valid IPv4 address (octets 0-255)."""
+    parts = value.split(".")
+    if len(parts) != 4:
+        return False
+    try:
+        return all(0 <= int(p) <= 255 for p in parts if p.isdigit())
+    except ValueError:
+        return False
 
 
 def _summarize_evidence_for_rag(blackboard: object, max_chars: int = 6000) -> str:

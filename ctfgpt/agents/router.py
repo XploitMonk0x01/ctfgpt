@@ -40,9 +40,21 @@ class MultiAgentRouter:
             border_style="cyan"
         ))
         
-        current_task = f"Begin attacking target {self.target}."
+        # Thrash detection: track (agent, task_fingerprint) pairs to prevent loops
+        seen_tasks: set[tuple[str, str]] = set()
+        agent_run_counts: dict[str, int] = {"recon": 0, "exploit": 0, "privesc": 0}
         
         for i in range(max_handoffs):
+            # Build thrash context for the prompt
+            thrash_warnings = []
+            for agent_name, count in agent_run_counts.items():
+                if count >= 2:
+                    thrash_warnings.append(
+                        f"⚠ WARNING: You have already run {agent_name.upper()} {count} times. "
+                        f"Consider escalating to a different agent."
+                    )
+            thrash_notice = "\n".join(thrash_warnings) if thrash_warnings else ""
+            
             # 1. Router decides which agent to call
             prompt = f"""You are the CTF-GPT Router.
 Target: {self.target}
@@ -50,6 +62,8 @@ Category: {self.category}
 
 Current state of evidence:
 {self.bb.summary()}
+
+{thrash_notice}
 
 Available agents:
 - RECON: Port scanning, directory brute-forcing, enumeration
@@ -85,12 +99,31 @@ SUMMARY: <final summary>
             agent_name = agent_match.group(1).lower()
             task = task_match.group(1).strip()
             
-            console.print(f"\n[bold blue]🔄 Router delegating to {agent_name.upper()}[/bold blue]")
-            console.print(f"[dim]Task: {task}[/dim]\n")
-            
             if agent_name not in self.agents:
                 console.print(f"[red]❌ Router chose unknown agent '{agent_name}'. Valid: {list(self.agents.keys())}. Skipping.[/red]")
                 continue
+
+            # Thrash detection: same agent + same task fingerprint = loop
+            task_fp = task[:80]  # fingerprint: first 80 chars
+            task_key = (agent_name, task_fp)
+            if task_key in seen_tasks:
+                console.print(
+                    f"[yellow]⚠ Thrash detected: {agent_name.upper()} was already given this task. "
+                    f"Forcing a different agent or skipping.[/yellow]"
+                )
+                # Force the router to pick the next logical agent
+                forced = {"recon": "exploit", "exploit": "privesc", "privesc": "exploit"}
+                agent_name = forced.get(agent_name, "exploit")
+                console.print(f"[yellow]  → Escalating to {agent_name.upper()}[/yellow]")
+                if agent_name not in self.agents:
+                    break
+            else:
+                seen_tasks.add(task_key)
+
+            agent_run_counts[agent_name] = agent_run_counts.get(agent_name, 0) + 1
+            
+            console.print(f"\n[bold blue]🔄 Router delegating to {agent_name.upper()}[/bold blue]")
+            console.print(f"[dim]Task: {task}[/dim]\n")
 
             # 2. Run the chosen agent
             agent = self.agents[agent_name]

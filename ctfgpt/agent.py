@@ -157,15 +157,19 @@ def plan_node(state: AgentState) -> dict:
             retriever = get_retriever(state["category"])
             docs = retriever.invoke(state["query"])
             rag_context = format_docs(docs) if docs else "No writeup data available."
-        except Exception:
-            rag_context = "RAG unavailable — no writeup context."
+        except (ConnectionError, TimeoutError, OSError) as exc:
+            # Only suppress expected transient errors; log them clearly
+            console.print(f"  [dim yellow]⚠  RAG retrieval failed ({type(exc).__name__}: {exc}) — continuing without context.[/dim yellow]")
+            rag_context = "RAG unavailable due to transient error — no writeup context."
 
-    # Build list of previously executed commands to prevent repetition
-    executed_cmds = []
+    # Build set of previously executed commands for O(1) dedup lookup
+    executed_cmds_set: set[str] = set()
+    executed_cmds: list[str] = []
     for f in state.get("findings", []):
         cmd = f.get("command", "") if isinstance(f, dict) else ""
-        if cmd and cmd not in executed_cmds:
+        if cmd and cmd not in executed_cmds_set:
             executed_cmds.append(cmd)
+            executed_cmds_set.add(cmd)
     executed_commands_str = ", ".join(executed_cmds) if executed_cmds else "(none yet)"
 
     prompt_text = _PLAN_PROMPT.format(
