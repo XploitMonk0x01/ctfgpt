@@ -78,13 +78,16 @@ METHODOLOGY (follow this order):
 PORTS HINT (if already known from evidence):
 {ports_hint}
 
+HISTORICAL CTF KNOWLEDGE (from ingested writeups):
+{rag_hint}
+
 RULES:
 1. Generate exactly {max_steps} steps ordered by the methodology above
 2. Each step MUST be a CONCRETE shell command using the actual target "{target}"
 3. Do NOT use {{target}}, <target>, or any placeholder — only the literal string
 4. Do NOT include /etc/hosts manipulation — that is handled automatically
 5. Do NOT repeat any already-completed step from evidence
-6. If category is 'web': always start nmap, then curl -sI, then gobuster/ffuf, then wpscan if WordPress detected
+6. If category is 'web': always start nmap, then curl -sILk, then gobuster/ffuf with -k (ignore SSL) and -s "200,204,301,302,307,401,403" to ensure redirects are found.
 7. If category is 'pwn': nmap → file, strings, checksec, gdb/pwndbg
 8. If category is 'crypto': cat / identify cipher → decode → crack
 9. Include WPScan with API token placeholder only if WordPress evidence exists
@@ -97,9 +100,9 @@ STEP 2: <shell command> | RATIONALE: <one sentence why>
 
 EXAMPLE for a web target with SSH and HTTP open:
 STEP 1: nmap -sCV -T4 10.10.11.230 | RATIONALE: Discover all open ports and service versions
-STEP 2: curl -sIL http://10.10.11.230 | RATIONALE: Follow redirects and fingerprint HTTP tech stack
-STEP 3: gobuster dir -u http://10.10.11.230 -w /usr/share/seclists/Discovery/Web-Content/common.txt -x php,html,txt | RATIONALE: Brute-force common web directories
-STEP 4: wpscan --url http://10.10.11.230 --enumerate u,vp --plugins-detection aggressive | RATIONALE: Enumerate WordPress users and vulnerable plugins
+STEP 2: curl -sILk http://10.10.11.230 | RATIONALE: Follow redirects and fingerprint HTTP tech stack
+STEP 3: gobuster dir -u http://10.10.11.230 -w /usr/share/seclists/Discovery/Web-Content/common.txt -x php,html,txt -k -s "200,204,301,302,307,401,403" | RATIONALE: Brute-force common web directories and check for 301 redirects
+STEP 4: wpscan --url http://10.10.11.230 --enumerate u,vp --plugins-detection aggressive --disable-tls-checks | RATIONALE: Enumerate WordPress users and vulnerable plugins
 """
 
 _REPLAN_PROMPT = """\
@@ -132,7 +135,7 @@ Based on the output, decide EXACTLY ONE of:
 SMART DECISION RULES:
 - If nmap output shows open ports → always REPLAN with port-specific commands:
   * 22/tcp → add ssh bruteforce or banner grab if creds aren't known
-  * 80/tcp or 443/tcp → gobuster, nikto, curl title, wpscan if WordPress detected
+  * 80/tcp or 443/tcp → gobuster/ffuf with -k (ignore SSL) and -s "200,301,302", nikto, curl title
   * 21/tcp → ftp anonymous login check
   * 445/tcp → enum4linux, smbclient -L
   * 3306/tcp → mysql connection check
@@ -376,6 +379,21 @@ def run_planner(
     # --- Blackboard ---------------------------------------------------------
     bb = Blackboard(session_id=session_id, category=category, challenge_desc=challenge_desc)
 
+    # --- Pre-fetch RAG Knowledge --------------------------------------------
+    console.print()
+    console.print("  [dim]Searching ingested writeups for initial attack ideas…[/dim]")
+    try:
+        # Ask RAG based on the category and target description to seed the plan
+        rag_hint, _ = rag_ask(
+            query=f"Initial attack vector and tools for a {category} challenge. Target: {clean_target} {challenge_desc}",
+            category=category,
+            level=3,
+        )
+        if "Context retrieval temporarily unavailable" in rag_hint or "not populated" in rag_hint:
+            rag_hint = "No relevant historical writeups found. Rely on standard methodology."
+    except Exception as e:
+        rag_hint = f"RAG search failed: {e}"
+
     # --- Generate Plan via LLM ----------------------------------------------
     console.print()
     console.print(Rule("[bold cyan]Generating Attack Plan[/bold cyan]"))
@@ -391,6 +409,7 @@ def run_planner(
         file_context=file_context,
         evidence_context=evidence_context,
         ports_hint=ports_hint,
+        rag_hint=rag_hint,
         max_steps=max_steps,
     )
 
