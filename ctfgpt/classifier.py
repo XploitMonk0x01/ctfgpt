@@ -61,7 +61,7 @@ _COMPILED_PATTERNS: dict[str, list[re.Pattern[str]]] = {
 _CONFIDENCE_THRESHOLD: float = 0.15
 
 # Fallback when there is no clear signal
-_DEFAULT_CATEGORY: str = "forensics"
+_DEFAULT_CATEGORY: str = "web"
 
 
 def keyword_score(query: str) -> dict[str, float]:
@@ -122,6 +122,12 @@ def classify(query: str, override: Optional[str] = None) -> str:
 
     if best_score >= _CONFIDENCE_THRESHOLD:
         return best_category
+
+    if best_score == 0.0:
+        console.print(
+            f"  [dim]Classifier: no keywords matched — defaulting to '{_DEFAULT_CATEGORY}'[/dim]"
+        )
+        return _DEFAULT_CATEGORY
 
     # Not enough signal — return the best-scoring category anyway (never blindly default)
     # This avoids the wrong playbook running when there is some (weak) signal
